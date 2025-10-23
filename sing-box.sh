@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # 一键安装/更新/卸载 sing-box（VLESS + REALITY）+ 安装/启用 BBR+fq
-# 支持远程短命令：sudo bash <(curl -fsSL https://your-domain/path/setup-vless-reality.sh)
-# 或：sudo bash <(wget -qO- https://your-domain/path/setup-vless-reality.sh)
+# 远程短命令：
+#   curl：sudo bash <(curl -fsSL https://your-domain/path/setup-vless-reality.sh)
+#   wget：sudo bash <(wget -qO- https://your-domain/path/setup-vless-reality.sh)
 # 安装后快捷命令：singbox
+# 修复要点：
+#   - 生成 Reality 密钥：兼容不同输出格式并禁用彩色输出
+#   - inbounds 不再设置 transport 为 "tcp"（否则报 unknown transport type: tcp）
 # Tested on: Debian 11/12, Ubuntu 20.04/22.04/24.04, CentOS/Alma/Rocky 8/9
 # Architecture: amd64, arm64
 
@@ -116,7 +120,7 @@ parse_reality_keys() {
   local clean
   clean=$(printf "%s" "$text" | tr -d '\r' | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g')
 
-  # 1) 优先尝试 JSON 解析（部分构建可能支持）
+  # 1) JSON 解析（若输出为 JSON）
   if echo "$clean" | jq -e . >/dev/null 2>&1; then
     SB_PRIV_KEY=$(echo "$clean" | jq -r '.private_key // .priv // empty')
     SB_PUB_KEY=$(echo "$clean"  | jq -r '.public_key  // .pub  // empty')
@@ -218,7 +222,6 @@ write_config() {
       "users": [
         { "uuid": "${SB_UUID}", "flow": "xtls-rprx-vision" }
       ],
-      "transport": { "type": "tcp" },
       "tls": {
         "enabled": true,
         "server_name": "${SB_SNI_DOMAIN}",
@@ -361,7 +364,7 @@ $(gen_vless_link "VLESS-REALITY")
   "server_port": ${meta_port},
   "uuid": "${meta_uuid}",
   "flow": "xtls-rprx-vision",
-  "transport": { "type": "tcp" },
+  "network": "tcp",
   "tls": {
     "enabled": true,
     "server_name": "${meta_sni}",
@@ -654,11 +657,7 @@ main "$@"
 #-----------------------------
 # 进阶：与 Nginx 共享 443（可选）
 #-----------------------------
-# 如果你必须与 Nginx 共享 443，可以使用 Nginx stream 基于 SNI 分流：
-# 注意：Reality 客户端的 SNI 是伪装域名（如 www.cloudflare.com），
-# 你可以将此类 SNI 的连接转发给 sing-box，其他你的真实域名继续给 Nginx/网站。
-#
-# /etc/nginx/nginx.conf 里添加（需启用 stream 模块）：
+# 若需与 Nginx 共享 443，可用 Nginx stream 基于 SNI 分流：
 #
 # stream {
 #   map $ssl_preread_server_name $route {
@@ -666,7 +665,7 @@ main "$@"
 #     default web;
 #   }
 #   upstream singbox_backend { server 127.0.0.1:8443; } # sing-box 监听端口
-#   upstream web_backend    { server 127.0.0.1:443; }   # 你原有的服务（或变更端口）
+#   upstream web_backend    { server 127.0.0.1:443; }   # 你原有的服务（或更改端口）
 #
 #   server {
 #     listen 443 reuseport;
@@ -674,6 +673,4 @@ main "$@"
 #     ssl_preread on;
 #   }
 # }
-#
-# 然后：nginx -t && systemctl reload nginx
-# 这样客户端仍用 443，且按 SNI 分流至 sing-box 或 Web。
+# nginx -t && systemctl reload nginx
