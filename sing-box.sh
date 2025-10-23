@@ -96,7 +96,7 @@ download_latest_singbox() {
   tmpdir=$(mktemp -d)
   info "获取 sing-box 最新版本..."
   api_json=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest) || err "无法访问 GitHub API（可能网络受限或限速）"
-  # 使用 contains + endswith，避免正则转义问题
+  # 使用 contains + endswith，避免 jq 正则转义问题
   url=$(echo "$api_json" | jq -r --arg arch "$ARCH" '.assets[] | select(.name | (contains("linux-"+$arch) and endswith(".tar.gz"))) | .browser_download_url' | head -n1)
   name=$(echo "$api_json" | jq -r '.name')
   [ -n "$url" ] || err "未能找到 sing-box 的下载地址（assets 匹配失败）"
@@ -109,6 +109,13 @@ download_latest_singbox() {
   info "sing-box 已安装到 $BIN_PATH"
 }
 
+# 解析 Reality key 输出（兼容不同版本）
+parse_reality_keys() {
+  local text="$1"
+  SB_PRIV_KEY=$(echo "$text" | sed -n 's/.*[Pp]rivate[[:space:]]\+[Kk]ey[: ]*\([A-Za-z0-9+\/=_-]\+\).*/\1/p' | head -n1)
+  SB_PUB_KEY=$(echo "$text" | sed -n 's/.*[Pp]ublic[[:space:]]\+[Kk]ey[: ]*\([A-Za-z0-9+\/=_-]\+\).*/\1/p' | head -n1)
+}
+
 generate_values() {
   # UUID
   if command -v uuidgen >/dev/null 2>&1; then
@@ -116,14 +123,32 @@ generate_values() {
   else
     SB_UUID=$(cat /proc/sys/kernel/random/uuid)
   fi
-  # Reality keypair
+
+  # Reality keypair（优先 reality-keypair，失败则回退 reality-key）
   local rk_output
-  rk_output=$("$BIN_PATH" generate reality-key)
-  SB_PRIV_KEY=$(echo "$rk_output" | awk -F': ' '/Private Key/{print $2}')
-  SB_PUB_KEY=$(echo "$rk_output" | awk -F': ' '/Public Key/{print $2}')
-  [ -n "$SB_PRIV_KEY" ] && [ -n "$SB_PUB_KEY" ] || err "生成 Reality 密钥失败"
-  # short_id（8~16 hex，取 16）
-  SB_SHORT_ID=$(openssl rand -hex 8)
+  rk_output=$("$BIN_PATH" generate reality-keypair 2>&1 || true)
+  parse_reality_keys "$rk_output"
+  if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
+    rk_output=$("$BIN_PATH" generate reality-key 2>&1 || true)
+    parse_reality_keys "$rk_output"
+  fi
+  if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
+    echo "$rk_output" >&2
+    err "生成 Reality 密钥失败（请确认 sing-box 已正确安装且版本支持 generate reality-keypair）"
+  fi
+
+  # short_id（8~16 hex，取 16）。尽量使用 sing-box 自带，如失败再用 openssl。
+  if "$BIN_PATH" generate rand --hex 8 >/dev/null 2>&1; then
+    SB_SHORT_ID=$("$BIN_PATH" generate rand --hex 8)
+  else
+    SB_SHORT_ID=$(openssl rand -hex 8)
+  fi
+
+  info "生成参数完成："
+  echo "  UUID:         $SB_UUID"
+  echo "  Public Key:   $SB_PUB_KEY"
+  echo "  Private Key:  $SB_PRIV_KEY"
+  echo "  Short ID:     $SB_SHORT_ID"
 }
 
 write_config() {
