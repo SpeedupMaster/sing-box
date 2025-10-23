@@ -24,12 +24,12 @@
 
 - 使用 curl：
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh)
 ```
 
 - 使用 wget：
 ```bash
-sudo bash <(wget -qO- https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh)
+bash <(wget -qO- https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh)
 ```
 
 首次执行后，脚本会将自身安装到 `/usr/local/bin/singboxctl`，并创建快捷命令 `/usr/local/bin/singbox`。之后可以直接运行：
