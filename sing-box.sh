@@ -509,19 +509,46 @@ do_enable_bbr() {
 #-----------------------------
 # Self-install (首次运行自动安装为 singbox/singboxctl)
 #-----------------------------
+# 可选：设置你的脚本发布地址，供自安装回源使用
+SCRIPT_URL="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh"   # 例如：SCRIPT_URL="https://your-domain/path/setup-vless-reality.sh"
+
 self_install() {
   local src="${BASH_SOURCE[0]:-}"
-  if [ -z "$src" ]; then
-    warn "无法确定脚本来源路径，跳过自安装。你可手动保存为 $SELF_PATH 并链接到 $LINK_PATH"
+
+  # 已安装过：仅确保快捷命令存在
+  if [ -x "$SELF_PATH" ]; then
+    ln -sf "$SELF_PATH" "$LINK_PATH"
     return 0
   fi
-  if [ "$src" != "$SELF_PATH" ]; then
-    mkdir -p /usr/local/bin
-    cat "$src" > "$SELF_PATH"
-    chmod +x "$SELF_PATH"
+
+  # 来源是可读的“普通文件”，直接复制整个文件（不会受读指针影响）
+  if [ -n "$src" ] && [ -f "$src" ]; then
+    install -m 0755 "$src" "$SELF_PATH"
     ln -sf "$SELF_PATH" "$LINK_PATH"
     info "已安装快捷命令：singbox（路径：$LINK_PATH）"
+    return 0
   fi
+
+  # 来源不是普通文件（如 /dev/fd/63），尝试回源下载
+  if [ -n "${SCRIPT_URL:-}" ]; then
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL "$SCRIPT_URL" -o "$SELF_PATH" || err "无法从 SCRIPT_URL 拉取脚本：$SCRIPT_URL"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO "$SELF_PATH" "$SCRIPT_URL" \vert{}\vert{} err "无法从 SCRIPT_URL 拉取脚本：$SCRIPT_URL"
+    else
+      err "缺少 curl/wget，且无法从 BASH_SOURCE 复制，无法自安装"
+    fi
+    chmod +x "$SELF_PATH"
+    ln -sf "$SELF_PATH" "$LINK_PATH"
+    info "已从 SCRIPT_URL 自安装并创建快捷命令：singbox"
+    return 0
+  fi
+
+  # 否则：明确提示并跳过（避免写入截断内容）
+  warn "脚本当前来源不是普通文件（可能是 /dev/fd/* 的流）。为避免截断，已跳过自安装。"
+  warn "建议使用以下任一方式完成安装："
+  echo "  1) curl -fsSL <URL> -o /usr/local/bin/singboxctl && chmod +x /usr/local/bin/singboxctl && ln -sf /usr/local/bin/singboxctl /usr/local/bin/singbox"
+  echo "  2) curl -fsSL <URL> \vert{} sudo tee /usr/local/bin/singboxctl >/dev/null && sudo chmod +x /usr/local/bin/singboxctl && sudo ln -sf /usr/local/bin/singboxctl /usr/local/bin/singbox"
 }
 
 #-----------------------------
