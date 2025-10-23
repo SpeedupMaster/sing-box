@@ -96,8 +96,9 @@ download_latest_singbox() {
   tmpdir=$(mktemp -d)
   info "获取 sing-box 最新版本..."
   api_json=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest) || err "无法访问 GitHub API（可能网络受限或限速）"
-  url=$(echo "$api_json" | jq -r ".assets[] | select(.name | test(\"linux-${ARCH}.*\\.tar\\.gz\")) | .browser_download_url" | head -n1)
-  name=$(echo "$api_json" | jq -r ".name")
+  # 使用 contains + endswith，避免正则转义问题
+  url=$(echo "$api_json" | jq -r --arg arch "$ARCH" '.assets[] | select(.name | (contains("linux-"+$arch) and endswith(".tar.gz"))) | .browser_download_url' | head -n1)
+  name=$(echo "$api_json" | jq -r '.name')
   [ -n "$url" ] || err "未能找到 sing-box 的下载地址（assets 匹配失败）"
   info "下载：$name / $url"
   curl -fsSL "$url" -o "$tmpdir/singbox.tar.gz" || err "下载失败"
@@ -392,16 +393,13 @@ do_enable_bbr() {
 # Self-install (首次运行自动安装为 singbox/singboxctl)
 #-----------------------------
 self_install() {
-  # 当前脚本路径（可能是 /dev/fd/* 或本地文件）
   local src="${BASH_SOURCE[0]:-}"
   if [ -z "$src" ]; then
     warn "无法确定脚本来源路径，跳过自安装。你可手动保存为 $SELF_PATH 并链接到 $LINK_PATH"
     return 0
   fi
   if [ "$src" != "$SELF_PATH" ]; then
-    # 确保 /usr/local/bin 存在
     mkdir -p /usr/local/bin
-    # 复制自身到目标位置
     cat "$src" > "$SELF_PATH"
     chmod +x "$SELF_PATH"
     ln -sf "$SELF_PATH" "$LINK_PATH"
