@@ -109,38 +109,54 @@ download_latest_singbox() {
   info "sing-box 已安装到 $BIN_PATH"
 }
 
-# 解析 Reality key 输出（兼容同一行/下一行）
+# 解析 Reality key 输出（兼容彩色/同一行/下一行/JSON）
 parse_reality_keys() {
   local text="$1"
-  # 先尝试同一行（包含冒号后紧跟值）
-  SB_PRIV_KEY=$(echo "$text" | awk 'BEGIN{IGNORECASE=1}
+  # 去除 CR 和 ANSI 颜色转义
+  local clean
+  clean=$(printf "%s" "$text" | tr -d '\r' | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g')
+
+  # 1) 优先尝试 JSON 解析（部分构建可能支持）
+  if echo "$clean" | jq -e . >/dev/null 2>&1; then
+    SB_PRIV_KEY=$(echo "$clean" | jq -r '.private_key // .priv // empty')
+    SB_PUB_KEY=$(echo "$clean"  | jq -r '.public_key  // .pub  // empty')
+    if [ -n "${SB_PRIV_KEY:-}" ] && [ -n "${SB_PUB_KEY:-}" ]; then
+      return 0
+    fi
+  fi
+
+  # 2) 同一行 "Private Key: X" / "Public Key: Y"
+  local priv pub
+  priv=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1}
     /private[[:space:]]*key/ {
-      if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; found=1; exit }
-    }
-    END { if (found!=1) exit 1 }' 2>/dev/null || true)
-  SB_PUB_KEY=$(echo "$text" | awk 'BEGIN{IGNORECASE=1}
+      if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; exit }
+    }')
+  pub=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1}
     /public[[:space:]]*key/ {
-      if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; found=1; exit }
-    }
-    END { if (found!=1) exit 1 }' 2>/dev/null || true)
-
-  # 若同一行未取到，再取下一行的值
-  if [ -z "${SB_PRIV_KEY:-}" ]; then
-    SB_PRIV_KEY=$(echo "$text" | awk 'BEGIN{IGNORECASE=1}
-      /private[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit }' 2>/dev/null || true)
-  fi
-  if [ -z "${SB_PUB_KEY:-}" ]; then
-    SB_PUB_KEY=$(echo "$text" | awk 'BEGIN{IGNORECASE=1}
-      /public[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit }' 2>/dev/null || true)
+      if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; exit }
+    }')
+  if [ -n "$priv" ] && [ -n "$pub" ]; then
+    SB_PRIV_KEY="$priv"
+    SB_PUB_KEY="$pub"
+    return 0
   fi
 
-  # 最后兜底：从所有行里抓“看起来像 key 的 token”
-  if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
-    local tokens
-    tokens=$(echo "$text" | tr -d '\r' | grep -Eo '[A-Za-z0-9_\-+/=]{32,}' | head -n2)
-    SB_PRIV_KEY=${SB_PRIV_KEY:-$(echo "$tokens" | sed -n '1p')}
-    SB_PUB_KEY=${SB_PUB_KEY:-$(echo "$tokens" | sed -n '2p')}
+  # 3) 下一行才是值
+  priv=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1}
+    /private[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit}')
+  pub=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1}
+    /public[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit}')
+  if [ -n "$priv" ] && [ -n "$pub" ]; then
+    SB_PRIV_KEY="$priv"
+    SB_PUB_KEY="$pub"
+    return 0
   fi
+
+  # 4) 兜底：提取看起来像 key 的 token（Base64/URL-safe）
+  local tokens
+  tokens=$(echo "$clean" | grep -Eo '[A-Za-z0-9_\-+/=]{32,}' | head -n2)
+  SB_PRIV_KEY=${SB_PRIV_KEY:-$(echo "$tokens" | sed -n '1p')}
+  SB_PUB_KEY=${SB_PUB_KEY:-$(echo "$tokens" | sed -n '2p')}
 }
 
 generate_values() {
@@ -151,20 +167,27 @@ generate_values() {
     SB_UUID=$(cat /proc/sys/kernel/random/uuid)
   fi
 
-  # Reality keypair（优先 reality-keypair，失败回退 reality-key）
-  local rk_output
-  rk_output=$("$BIN_PATH" generate reality-keypair 2>&1 || true)
-  parse_reality_keys "$rk_output"
-  if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
-    rk_output=$("$BIN_PATH" generate reality-key 2>&1 || true)
+  # 如环境变量提供，优先使用（便于手动注入）
+  if [ -n "${SB_PRIV_KEY:-}" ] && [ -n "${SB_PUB_KEY:-}" ]; then
+    info "使用环境变量中的 Reality 密钥对"
+  else
+    # Reality keypair（禁用彩色输出，优先 reality-keypair，失败回退 reality-key）
+    local rk_output
+    rk_output=$("$BIN_PATH" --disable-color generate reality-keypair 2>&1 || true)
     parse_reality_keys "$rk_output"
-  fi
-  if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
-    echo "sing-box 输出如下，供排查：" >&2
-    echo "--------------------------------" >&2
-    echo "$rk_output" >&2
-    echo "--------------------------------" >&2
-    err "生成 Reality 密钥失败（解析不到 Private/Public Key）"
+
+    if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
+      rk_output=$("$BIN_PATH" --disable-color generate reality-key 2>&1 || true)
+      parse_reality_keys "$rk_output"
+    fi
+
+    if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
+      echo "[DEBUG] sing-box reality-keypair 输出如下：" >&2
+      echo "--------------------------------" >&2
+      echo "$rk_output" >&2
+      echo "--------------------------------" >&2
+      err "生成 Reality 密钥失败（解析不到 Private/Public Key）"
+    fi
   fi
 
   # short_id（8~16 hex，取 16）。优先 sing-box 自带，失败则 openssl。
@@ -180,6 +203,7 @@ generate_values() {
   echo "  Private Key:  $SB_PRIV_KEY"
   echo "  Short ID:     $SB_SHORT_ID"
 }
+
 write_config() {
   mkdir -p "$CFG_DIR"
   cat > "$CFG_PATH" <<EOF
