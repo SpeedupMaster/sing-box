@@ -3,12 +3,17 @@
 # 远程短命令：
 #   curl：sudo bash <(curl -fsSL https://your-domain/path/setup-vless-reality.sh)
 #   wget：sudo bash <(wget -qO- https://your-domain/path/setup-vless-reality.sh)
-# 安装后快捷命令：singbox
-# 修复要点：
-#   - 生成 Reality 密钥：兼容不同输出格式并禁用彩色输出
-#   - inbounds 不再设置 transport 为 "tcp"（否则报 unknown transport type: tcp）
-# Tested on: Debian 11/12, Ubuntu 20.04/22.04/24.04, CentOS/Alma/Rocky 8/9
-# Architecture: amd64, arm64
+#
+# 说明与要点：
+#   - 自动安装最新 sing-box（GitHub Releases），并以 systemd 管理
+#   - 生成 Reality 密钥：兼容多种输出格式（禁用彩色解析干扰）
+#   - 修复：VLESS 入站不设置 transport: {"type":"tcp"}（否则报 unknown transport type: tcp）
+#   - 输出 vless 导入链接与 sing-box 客户端示例
+#   - 集成 BBR+fq：先启用再校验，避免陷入“重复升级内核”的循环
+#   - 自安装快捷命令：singbox（/usr/local/bin/singbox -> /usr/local/bin/singboxctl）
+#
+# Tested: Debian 11/12, Ubuntu 20.04/22.04/24.04, CentOS/Alma/Rocky 8/9
+# Arch: amd64, arm64
 
 set -euo pipefail
 umask 022
@@ -100,7 +105,6 @@ download_latest_singbox() {
   tmpdir=$(mktemp -d)
   info "获取 sing-box 最新版本..."
   api_json=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest) || err "无法访问 GitHub API（可能网络受限或限速）"
-  # 使用 contains + endswith，避免 jq 正则转义问题
   url=$(echo "$api_json" | jq -r --arg arch "$ARCH" '.assets[] | select(.name | (contains("linux-"+$arch) and endswith(".tar.gz"))) | .browser_download_url' | head -n1)
   name=$(echo "$api_json" | jq -r '.name')
   [ -n "$url" ] || err "未能找到 sing-box 的下载地址（assets 匹配失败）"
@@ -120,7 +124,7 @@ parse_reality_keys() {
   local clean
   clean=$(printf "%s" "$text" | tr -d '\r' | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g')
 
-  # 1) JSON 解析（若输出为 JSON）
+  # 1) JSON 解析
   if echo "$clean" | jq -e . >/dev/null 2>&1; then
     SB_PRIV_KEY=$(echo "$clean" | jq -r '.private_key // .priv // empty')
     SB_PUB_KEY=$(echo "$clean"  | jq -r '.public_key  // .pub  // empty')
@@ -175,13 +179,13 @@ generate_values() {
   if [ -n "${SB_PRIV_KEY:-}" ] && [ -n "${SB_PUB_KEY:-}" ]; then
     info "使用环境变量中的 Reality 密钥对"
   else
-    # Reality keypair（禁用彩色输出，优先 reality-keypair，失败回退 reality-key）
+    # Reality keypair（禁用彩色输出：使用 NO_COLOR=1）
     local rk_output
-    rk_output=$("$BIN_PATH" --disable-color generate reality-keypair 2>&1 || true)
+    rk_output=$(env NO_COLOR=1 "$BIN_PATH" generate reality-keypair 2>&1 || true)
     parse_reality_keys "$rk_output"
 
     if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
-      rk_output=$("$BIN_PATH" --disable-color generate reality-key 2>&1 || true)
+      rk_output=$(env NO_COLOR=1 "$BIN_PATH" generate reality-key 2>&1 || true)
       parse_reality_keys "$rk_output"
     fi
 
@@ -408,6 +412,25 @@ has_bbr() {
   return 1
 }
 
+enable_bbr_fq() {
+  info "启用 BBR+fq..."
+  modprobe tcp_bbr 2>/dev/null || true
+  cat > "$SYSCTL_FILE" <<'EOF'
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+  sysctl --system >/dev/null 2>&1 || sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true
+
+  local cc qdisc
+  cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
+  qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "")
+  if [[ "$cc" == "bbr" && "$qdisc" == "fq" ]]; then
+    info "BBR+fq 已启用（当前内核：$(kernel_info)）"
+  else
+    warn "BBR+fq 启用状态未确认（cc=$cc, qdisc=$qdisc）。如仍不生效，可能需要重启或升级内核。"
+  fi
+}
+
 upgrade_kernel_for_bbr() {
   detect_os
   info "尝试安装较新内核以支持 BBR（将不会自动重启）..."
@@ -467,7 +490,7 @@ do_enable_bbr() {
     return 0
   fi
 
-  # 若还未启用，但系统具备 BBR，则提示手动检查
+  # 若还未启用，但系统具备 BBR，则提示手动检查（不再强制升级内核）
   if has_bbr; then
     warn "系统具备 BBR，但当前未生效（cc=$cc, qdisc=$qdisc）。"
     warn "请执行：modprobe tcp_bbr && sysctl --system，然后重试菜单 6。"
