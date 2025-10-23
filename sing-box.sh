@@ -391,27 +391,21 @@ kernel_info() {
   uname -r
 }
 
+# 检测是否“具备”BBR（支持即可，不要求已启用）
 has_bbr() {
-  sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr
-}
-
-enable_bbr_fq() {
-  info "启用 BBR+fq..."
-  modprobe tcp_bbr 2>/dev/null || true
-  cat > "$SYSCTL_FILE" <<'EOF'
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-EOF
-  sysctl --system >/dev/null 2>&1 || sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true
-
-  local cc qdisc
-  cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
-  qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "")
-  if [[ "$cc" == "bbr" && "$qdisc" == "fq" ]]; then
-    info "BBR+fq 已启用（当前内核：$(kernel_info)）"
-  else
-    warn "BBR+fq 启用状态未确认（cc=$cc, qdisc=$qdisc）。如仍不生效，可能需要重启或升级内核。"
+  # 1) sysctl 列表中已有 bbr
+  if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+    return 0
   fi
+  # 2) 模块存在（但可能未加载）
+  if command -v modinfo >/dev/null 2>&1 && modinfo tcp_bbr >/dev/null 2>&1; then
+    return 0
+  fi
+  # 3) 文件存在（某些系统没有 modinfo）
+  if ls /lib/modules/"$(uname -r)"/kernel/net/ipv4/tcp_bbr.* >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
 }
 
 upgrade_kernel_for_bbr() {
@@ -458,15 +452,34 @@ upgrade_kernel_for_bbr() {
 
 do_enable_bbr() {
   detect_os
+
+  # 无论如何先尝试启用（加载模块 + 写配置 + 应用）
+  enable_bbr_fq
+
+  # 再次验证当前状态
+  local cc qdisc available
+  cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
+  qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "")
+  available=$(sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "")
+
+  if [[ "$cc" == "bbr" && "$qdisc" == "fq" ]]; then
+    info "BBR+fq 已启用（cc=$cc, qdisc=$qdisc）"
+    return 0
+  fi
+
+  # 若还未启用，但系统具备 BBR，则提示手动检查
   if has_bbr; then
-    enable_bbr_fq
+    warn "系统具备 BBR，但当前未生效（cc=$cc, qdisc=$qdisc）。"
+    warn "请执行：modprobe tcp_bbr && sysctl --system，然后重试菜单 6。"
+    return 0
+  fi
+
+  # 确实不具备 BBR 支持，才询问是否升级内核
+  warn "当前内核未包含 BBR 支持（$(kernel_info)）。"
+  if yes_or_no "是否自动尝试升级到较新内核以支持 BBR？（需要重启）" "N"; then
+    upgrade_kernel_for_bbr
   else
-    warn "当前内核可能不支持 BBR（$(kernel_info)），或未启用 TCP BBR 模块。"
-    if yes_or_no "是否自动尝试升级到较新内核以支持 BBR？（需要重启）" "N"; then
-      upgrade_kernel_for_bbr
-    else
-      warn "已取消内核升级。你可手动升级内核后再执行菜单 6 启用 BBR+fq。"
-    fi
+    warn "已取消内核升级。你也可以手动升级内核到 >= 4.9 后，再执行菜单 6 启用 BBR+fq。"
   fi
 }
 
