@@ -109,11 +109,38 @@ download_latest_singbox() {
   info "sing-box 已安装到 $BIN_PATH"
 }
 
-# 解析 Reality key 输出（兼容不同版本）
+# 解析 Reality key 输出（兼容同一行/下一行）
 parse_reality_keys() {
   local text="$1"
-  SB_PRIV_KEY=$(echo "$text" | sed -n 's/.*[Pp]rivate[[:space:]]\+[Kk]ey[: ]*\([A-Za-z0-9+\/=_-]\+\).*/\1/p' | head -n1)
-  SB_PUB_KEY=$(echo "$text" | sed -n 's/.*[Pp]ublic[[:space:]]\+[Kk]ey[: ]*\([A-Za-z0-9+\/=_-]\+\).*/\1/p' | head -n1)
+  # 先尝试同一行（包含冒号后紧跟值）
+  SB_PRIV_KEY=$(echo "$text" | awk 'BEGIN{IGNORECASE=1}
+    /private[[:space:]]*key/ {
+      if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; found=1; exit }
+    }
+    END { if (found!=1) exit 1 }' 2>/dev/null || true)
+  SB_PUB_KEY=$(echo "$text" | awk 'BEGIN{IGNORECASE=1}
+    /public[[:space:]]*key/ {
+      if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; found=1; exit }
+    }
+    END { if (found!=1) exit 1 }' 2>/dev/null || true)
+
+  # 若同一行未取到，再取下一行的值
+  if [ -z "${SB_PRIV_KEY:-}" ]; then
+    SB_PRIV_KEY=$(echo "$text" | awk 'BEGIN{IGNORECASE=1}
+      /private[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit }' 2>/dev/null || true)
+  fi
+  if [ -z "${SB_PUB_KEY:-}" ]; then
+    SB_PUB_KEY=$(echo "$text" | awk 'BEGIN{IGNORECASE=1}
+      /public[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit }' 2>/dev/null || true)
+  fi
+
+  # 最后兜底：从所有行里抓“看起来像 key 的 token”
+  if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
+    local tokens
+    tokens=$(echo "$text" | tr -d '\r' | grep -Eo '[A-Za-z0-9_\-+/=]{32,}' | head -n2)
+    SB_PRIV_KEY=${SB_PRIV_KEY:-$(echo "$tokens" | sed -n '1p')}
+    SB_PUB_KEY=${SB_PUB_KEY:-$(echo "$tokens" | sed -n '2p')}
+  fi
 }
 
 generate_values() {
@@ -124,7 +151,7 @@ generate_values() {
     SB_UUID=$(cat /proc/sys/kernel/random/uuid)
   fi
 
-  # Reality keypair（优先 reality-keypair，失败则回退 reality-key）
+  # Reality keypair（优先 reality-keypair，失败回退 reality-key）
   local rk_output
   rk_output=$("$BIN_PATH" generate reality-keypair 2>&1 || true)
   parse_reality_keys "$rk_output"
@@ -133,11 +160,14 @@ generate_values() {
     parse_reality_keys "$rk_output"
   fi
   if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
+    echo "sing-box 输出如下，供排查：" >&2
+    echo "--------------------------------" >&2
     echo "$rk_output" >&2
-    err "生成 Reality 密钥失败（请确认 sing-box 已正确安装且版本支持 generate reality-keypair）"
+    echo "--------------------------------" >&2
+    err "生成 Reality 密钥失败（解析不到 Private/Public Key）"
   fi
 
-  # short_id（8~16 hex，取 16）。尽量使用 sing-box 自带，如失败再用 openssl。
+  # short_id（8~16 hex，取 16）。优先 sing-box 自带，失败则 openssl。
   if "$BIN_PATH" generate rand --hex 8 >/dev/null 2>&1; then
     SB_SHORT_ID=$("$BIN_PATH" generate rand --hex 8)
   else
@@ -150,7 +180,6 @@ generate_values() {
   echo "  Private Key:  $SB_PRIV_KEY"
   echo "  Short ID:     $SB_SHORT_ID"
 }
-
 write_config() {
   mkdir -p "$CFG_DIR"
   cat > "$CFG_PATH" <<EOF
