@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 一键安装/更新/卸载 sing-box（VLESS + REALITY）+ 安装/启用 BBR+fq
 # 远程短命令：
-#   curl：sudo bash <(curl -fsSL https://your-domain/path/setup-vless-reality.sh)
-#   wget：sudo bash <(wget -qO- https://your-domain/path/setup-vless-reality.sh)
+#   curl：bash <(curl -fsSL https://your-domain/path/setup-vless-reality.sh)
+#   wget：bash <(wget -qO- https://your-domain/path/setup-vless-reality.sh)
 #
 # 说明与要点：
 #   - 自动安装最新 sing-box（GitHub Releases），并以 systemd 管理
