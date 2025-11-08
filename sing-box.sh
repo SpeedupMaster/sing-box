@@ -96,9 +96,8 @@ download_latest_singbox() {
   tmpdir=$(mktemp -d)
   info "获取 sing-box 最新版本..."
   api_json=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest) || err "无法访问 GitHub API（可能网络受限或限速）"
-  # 修正 jq 正则匹配，避免特殊字符问题
-  url=$(echo "$api_json" | jq -r ".assets[] | select(.name | contains(\"linux-${ARCH}\") and endswith(\".tar.gz\")) | .browser_download_url" | head -n1)
-  name=$(echo "$api_json" | jq -r ".name")
+  url=$(echo "$api_json" | jq -r --arg arch "$ARCH" '.assets[] | select(.name | (contains("linux-"+$arch) and endswith(".tar.gz"))) | .browser_download_url' | head -n1)
+  name=$(echo "$api_json" | jq -r '.name')
   [ -n "$url" ] || err "未能找到 sing-box 的下载地址（assets 匹配失败）"
   info "下载：$name / $url"
   curl -fsSL "$url" -o "$tmpdir/singbox.tar.gz" || err "下载失败"
@@ -109,8 +108,45 @@ download_latest_singbox() {
   info "sing-box 已安装到 $BIN_PATH"
 }
 
-# --- vvv MODIFIED FUNCTION vvv ---
+# --- vvv ROBUST PARSING FUNCTIONS vvv ---
+# 解析 Reality key 输出（兼容彩色/同一行/下一行/JSON）
+parse_reality_keys() {
+  local text="$1"
+  # 去除 CR 和 ANSI 颜色转义
+  local clean
+  clean=$(printf "%s" "$text" | tr -d '\r' | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g')
+
+  # 1) JSON 解析
+  if echo "$clean" | jq -e . >/dev/null 2>&1; then
+    SB_PRIV_KEY=$(echo "$clean" | jq -r '.private_key // .priv // empty')
+    SB_PUB_KEY=$(echo "$clean"  | jq -r '.public_key  // .pub  // empty')
+    if [ -n "${SB_PRIV_KEY:-}" ] && [ -n "${SB_PUB_KEY:-}" ]; then
+      return 0
+    fi
+  fi
+
+  # 2) 同一行 "Private Key: X" / "Public Key: Y"
+  local priv pub
+  priv=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1} /private[[:space:]]*key/ { if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; exit } }')
+  pub=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1} /public[[:space:]]*key/ { if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; exit } }')
+  if [ -n "$priv" ] && [ -n "$pub" ]; then
+    SB_PRIV_KEY="$priv"
+    SB_PUB_KEY="$pub"
+    return 0
+  fi
+
+  # 3) 下一行才是值
+  priv=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1} /private[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit}')
+  pub=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1} /public[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit}')
+  if [ -n "$priv" ] && [ -n "$pub" ]; then
+    SB_PRIV_KEY="$priv"
+    SB_PUB_KEY="$pub"
+    return 0
+  fi
+}
+
 generate_values() {
+  info "正在生成节点参数..."
   # UUID
   if command -v uuidgen >/dev/null 2>&1; then
     SB_UUID=$(uuidgen)
@@ -118,33 +154,30 @@ generate_values() {
     SB_UUID=$(cat /proc/sys/kernel/random/uuid)
   fi
 
-  # Reality keypair
+  # Reality keypair（安全执行，避免脚本中断）
   local rk_output
-  # 禁用颜色输出并执行命令，优先使用 generate reality-keypair
-  if "$BIN_PATH" help generate | grep -q "reality-keypair"; then
-    rk_output=$(NO_COLOR=1 "$BIN_PATH" generate reality-keypair)
-  else
-    rk_output=$(NO_COLOR=1 "$BIN_PATH" generate reality-key)
-  fi
+  rk_output=$(NO_COLOR=1 "$BIN_PATH" generate reality-keypair 2>&1 || true)
   
-  # 尝试用 jq 按 JSON 格式解析
-  SB_PRIV_KEY=$(echo "$rk_output" | jq -r '.private_key' 2>/dev/null)
-  SB_PUB_KEY=$(echo "$rk_output" | jq -r '.public_key' 2>/dev/null)
-
-  # 如果 jq 解析失败，回退到 grep/awk 解析纯文本
-  if [ -z "$SB_PRIV_KEY" ] || [ -z "$SB_PUB_KEY" ]; then
-    info "无法通过 JSON 解析密钥，尝试使用文本模式..."
-    SB_PRIV_KEY=$(echo "$rk_output" | grep 'Private Key' | awk -F': ' '{print $2}')
-    SB_PUB_KEY=$(echo "$rk_output" | grep 'Public Key' | awk -F': ' '{print $2}')
+  if [ -z "$rk_output" ]; then
+    err "sing-box generate reality-keypair 命令执行失败或无任何输出。"
   fi
 
-  [ -n "$SB_PRIV_KEY" ] && [ -n "$SB_PUB_KEY" ] || err "生成 Reality 密钥失败，命令输出：\n$rk_output"
-  info "已生成 Reality 密钥。"
+  parse_reality_keys "$rk_output"
 
-  # short_id（8~16 hex，取 16）
+  if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
+    echo "[DEBUG] sing-box reality-keypair 输出如下：" >&2
+    echo "--------------------------------" >&2
+    echo "$rk_output" >&2
+    echo "--------------------------------" >&2
+    err "生成 Reality 密钥失败（无法从命令输出中解析到 Private/Public Key）"
+  fi
+
+  # short_id
   SB_SHORT_ID=$(openssl rand -hex 8)
+
+  info "参数生成完成。"
 }
-# --- ^^^ MODIFIED FUNCTION ^^^ ---
+# --- ^^^ ROBUST PARSING FUNCTIONS ^^^ ---
 
 write_config() {
   mkdir -p "$CFG_DIR"
@@ -160,7 +193,6 @@ write_config() {
       "users": [
         { "uuid": "${SB_UUID}", "flow": "xtls-rprx-vision" }
       ],
-      "transport": { "type": "tcp" },
       "tls": {
         "enabled": true,
         "server_name": "${SB_SNI_DOMAIN}",
@@ -305,7 +337,6 @@ $(gen_vless_link "VLESS-REALITY")
   "server_port": ${meta_port},
   "uuid": "${meta_uuid}",
   "flow": "xtls-rprx-vision",
-  "transport": { "type": "tcp" },
   "tls": {
     "enabled": true,
     "server_name": "${meta_sni}",
@@ -333,7 +364,19 @@ kernel_info() {
 }
 
 has_bbr() {
-  sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr
+   # BBR 模块已加载
+  if lsmod | grep -q "tcp_bbr"; then
+    return 0
+  fi
+  # sysctl 可用列表里有 bbr
+  if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+    return 0
+  fi
+  # 模块文件存在
+  if [ -f "/lib/modules/$(uname -r)/kernel/net/ipv4/tcp_bbr.ko" ]; then
+    return 0
+  fi
+  return 1
 }
 
 enable_bbr_fq() {
@@ -343,58 +386,35 @@ enable_bbr_fq() {
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
-  sysctl --system >/dev/null 2>&1 || sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true
+  sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1 || true
 
   local cc qdisc
   cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
   qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "")
   if [[ "$cc" == "bbr" && "$qdisc" == "fq" ]]; then
-    info "BBR+fq 已启用（当前内核：$(kernel_info)）"
+    info "BBR+fq 已成功启用。"
   else
-    warn "BBR+fq 启用状态未确认（cc=$cc, qdisc=$qdisc）。如仍不生效，可能需要重启或升级内核。"
+    warn "BBR+fq 启用状态未确认（cc=$cc, qdisc=$qdisc）。"
   fi
 }
 
 upgrade_kernel_for_bbr() {
-  detect_os
-  info "尝试安装较新内核以支持 BBR（将不会自动重启）..."
+  info "尝试安装较新内核以支持 BBR..."
   case "${OS_ID}" in
-    ubuntu)
+    ubuntu|debian)
       apt-get update -y
-      DEBIAN_FRONTEND=noninteractive apt-get install -y linux-generic
-      info "Ubuntu 已安装 linux-generic 内核，重启后再执行菜单 6 启用 BBR+fq。"
-      ;;
-    debian)
-      apt-get update -y
-      if ! DEBIAN_FRONTEND=noninteractive apt-get install -y linux-image-amd64; then
-        if [ -n "${OS_CODENAME:-}" ]; then
-          echo "deb http://deb.debian.org/debian ${OS_CODENAME}-backports main" > /etc/apt/sources.list.d/backports.list
-          apt-get update -y
-          DEBIAN_FRONTEND=noninteractive apt-get -t "${OS_CODENAME}-backports" install -y linux-image-amd64
-          info "Debian 已安装 backports 内核，重启后再执行菜单 6 启用 BBR+fq。"
-        else
-          warn "无法识别 Debian codename，内核升级未完成。"
-        fi
-      else
-        info "Debian 已安装最新 linux-image-amd64，重启后再执行菜单 6 启用 BBR+fq。"
-      fi
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --install-recommends linux-generic
       ;;
     centos|almalinux|rocky)
-      local major
-      major=$(echo "$OS_VERSION_ID" | awk -F'.' '{print $1}')
-      if [[ "$major" == "9" ]]; then
-        yum install -y https://www.elrepo.org/elrepo-release-9.el9.elrepo.noarch.rpm || dnf install -y https://www.elrepo.org/elrepo-release-9.el9.elrepo.noarch.rpm
-      else
-        yum install -y https://www.elrepo.org/elrepo-release-8.el8.elrepo.noarch.rpm || dnf install -y https://www.elrepo.org/elrepo-release-8.el8.elrepo.noarch.rpm
-      fi
-      yum --enablerepo=elrepo-kernel install -y kernel-ml || dnf --enablerepo=elrepo-kernel install -y kernel-ml
-      info "EL 系列已安装 kernel-ml（主线内核）。重启后再执行菜单 6 启用 BBR+fq。"
+      yum install -y https://www.elrepo.org/elrepo-release-$(rpm -E %{rhel}).el$(rpm -E %{rhel}).elrepo.noarch.rpm
+      yum --enablerepo=elrepo-kernel install -y kernel-ml
       ;;
     *)
-      warn "暂不支持自动升级该系统的内核，请手动升级到 >= 4.9 的内核以支持 BBR。"
+      warn "暂不支持为 ${OS_ID} 自动升级内核。"
+      return 1
       ;;
   esac
-  warn "注意：更换内核需重启生效。请执行 reboot 后再次运行本脚本启用 BBR+fq。"
+  warn "内核已更新，请重启（reboot）后再次运行本脚本的菜单 6 来启用 BBR+fq。"
 }
 
 do_enable_bbr() {
@@ -402,36 +422,32 @@ do_enable_bbr() {
   if has_bbr; then
     enable_bbr_fq
   else
-    warn "当前内核可能不支持 BBR（$(kernel_info)），或未启用 TCP BBR 模块。"
-    if yes_or_no "是否自动尝试升级到较新内核以支持 BBR？（需要重启）" "N"; then
+    warn "当前内核 ($(kernel_info)) 可能不支持 BBR。"
+    if yes_or_no "是否尝试自动升级到最新内核以支持 BBR？（需要重启）" "N"; then
       upgrade_kernel_for_bbr
     else
-      warn "已取消内核升级。你可手动升级内核后再执行菜单 6 启用 BBR+fq。"
+      warn "已取消内核升级。您可手动升级内核后再执行此选项。"
     fi
   fi
 }
 
 #-----------------------------
-# Self-install (首次运行自动安装为 singbox/singboxctl)
+# Self-install
 #-----------------------------
 self_install() {
-  # 当前脚本路径（可能是 /dev/fd/* 或本地文件）
   local src="${BASH_SOURCE[0]:-}"
   if [ -z "$src" ]; then
-    warn "无法确定脚本来源路径，跳过自安装。你可手动保存为 $SELF_PATH 并链接到 $LINK_PATH"
-    return 0
+    warn "无法确定脚本来源，跳过自安装。"
+    return
   fi
-  if [ "$src" != "$SELF_PATH" ]; then
-    # 确保 /usr/local/bin 存在
-    mkdir -p /usr/local/bin
-    if [ -w "/usr/local/bin" ]; then
-      # 复制自身到目标位置
+  # 只有在常规文件或/dev/fd/存在时才安装
+  if [ -f "$src" ] || [ -e "$src" ]; then
+    if [ "$src" != "$SELF_PATH" ]; then
+      mkdir -p /usr/local/bin
       cat "$src" > "$SELF_PATH"
       chmod +x "$SELF_PATH"
       ln -sf "$SELF_PATH" "$LINK_PATH"
-      info "已安装快捷命令：singbox（路径：$LINK_PATH）"
-    else
-      warn "/usr/local/bin 不可写，跳过快捷命令安装。"
+      info "已安装快捷命令：singbox"
     fi
   fi
 }
@@ -446,23 +462,19 @@ do_install() {
 
   download_latest_singbox
 
-  # 默认端口逻辑：若 443 被占用则默认用 8443
-  local default_port default_sni default_handshake_port default_server_addr
+  local default_port="443"
   if port_busy 443; then
-    warn "检测到 443 端口已被占用（可能是 Nginx），默认监听端口改为 8443"
+    warn "443 端口已被占用，默认端口改为 8443"
     default_port="8443"
-  else
-    default_port="443"
   fi
-  default_sni="www.cloudflare.com"
-  default_handshake_port="443"
-  default_server_addr="$(get_public_ip)"
+  local default_sni="www.cloudflare.com"
+  local default_server_addr="$(get_public_ip)"
   [ -n "$default_server_addr" ] || default_server_addr="你的服务器域名或IP"
 
   SB_LISTEN_PORT=$(ask_with_default "请输入监听端口" "$default_port")
   SB_SNI_DOMAIN=$(ask_with_default "请输入握手域名（SNI）" "$default_sni")
-  SB_HANDSHAKE_PORT=$(ask_with_default "请输入握手端口（一般为 443）" "$default_handshake_port")
-  CLIENT_SERVER_ADDR=$(ask_with_default "客户端中填写的服务器地址（域名或IP）" "$default_server_addr")
+  SB_HANDSHAKE_PORT=$(ask_with_default "请输入握手端口" "443")
+  CLIENT_SERVER_ADDR=$(ask_with_default "客户端填写的服务器地址" "$default_server_addr")
 
   generate_values
   write_config
@@ -471,107 +483,63 @@ do_install() {
   open_firewall_port "$SB_LISTEN_PORT"
 
   print_client_guide
-  info "安装完成！如需查看日志：journalctl -u sing-box -f"
-
-  # 询问是否启用 BBR+fq
-  if yes_or_no "是否立刻安装/启用 BBR+fq 加速？" "Y"; then
+  info "安装完成！"
+  if yes_or_no "是否现在启用 BBR+fq 加速？" "Y"; then
     do_enable_bbr
-  else
-    warn "已跳过 BBR+fq 加速，你可在菜单中选择“安装/启用 BBR+fq”后续开启。"
   fi
 }
 
 #-----------------------------
-# Update
+# Main Functions
 #-----------------------------
 do_update() {
-  [ -x "$BIN_PATH" ] || err "未检测到 sing-box 已安装，请先安装"
-  detect_os
-  detect_arch
-  install_deps
+  [ -x "$BIN_PATH" ] || err "未检测到 sing-box，请先安装。"
   download_latest_singbox
-  systemctl restart sing-box || true
-  info "已更新并重启 sing-box"
+  systemctl restart sing-box
+  info "已更新并重启 sing-box。"
   "$BIN_PATH" version
-  if [ -f "$META_PATH" ]; then
-    print_client_guide
-  else
-    warn "未找到元数据文件，无法输出节点信息。若需重建信息，请重新执行安装或手动更新 $META_PATH"
-  fi
 }
 
-#-----------------------------
-# Uninstall
-#-----------------------------
 do_uninstall() {
-  local listen_port=""
-  if [ -f "$META_PATH" ]; then
-    listen_port=$(jq -r '.listen_port' "$META_PATH" 2>/dev/null || echo "")
+   if [ -f "$META_PATH" ]; then
+    local port_to_close=$(jq -r '.listen_port' "$META_PATH")
+    close_firewall_port "$port_to_close"
   fi
-
-  systemctl stop sing-box 2>/dev/null || true
-  systemctl disable sing-box 2>/dev/null || true
+  systemctl disable --now sing-box 2>/dev/null || true
   rm -f "$SVC_PATH"
   systemctl daemon-reload
-
-  if [ -n "${listen_port}" ]; then
-    close_firewall_port "$listen_port"
-  fi
-
-  echo
-  warn "是否删除 sing-box 的所有文件？此操作不可恢复。"
-  echo "1) 是，删除全部（可执行文件、配置文件、快捷命令）"
-  echo "2) 否，仅停止并禁用服务（保留所有文件）"
-  read -rp "请选择 [1/2] (默认 2): " choice || true
-  case "${choice:-2}" in
-    1)
+  if yes_or_no "是否删除所有 sing-box 文件（包括配置和二进制文件）？" "N"; then
       rm -f "$BIN_PATH" "$SELF_PATH" "$LINK_PATH"
       rm -rf "$CFG_DIR"
-      info "已删除 sing-box 所有相关文件"
-      ;;
-    *)
-      info "仅移除 systemd 服务，保留二进制与配置文件"
-      ;;
-  esac
-  info "卸载完成"
+      info "已删除所有 sing-box 文件。"
+  else
+      info "仅停止服务，文件已保留。"
+  fi
+  info "卸载完成。"
 }
 
-#-----------------------------
-# Show Info
-#-----------------------------
-show_info() {
-  [ -f "$META_PATH" ] || err "未找到 ${META_PATH}，请先安装"
-  print_client_guide
-}
-
-#-----------------------------
-# Restart
-#-----------------------------
 restart_service() {
   systemctl restart sing-box
-  info "已重启 sing-box 服务"
+  info "服务已重启。"
   sleep 1
   systemctl status sing-box --no-pager -l
 }
 
-#-----------------------------
-# Menu
-#-----------------------------
 show_menu() {
   clear
   echo "========================================"
   echo " sing-box (VLESS REALITY) 管理菜单"
   echo "----------------------------------------"
   echo " 1) 安装/初始化"
-  echo " 2) 更新 sing-box 到最新版本"
+  echo " 2) 更新 sing-box"
   echo " 3) 重启服务"
-  echo " 4) 查看节点信息与导入链接"
+  echo " 4) 查看节点信息"
   echo " 5) 卸载"
   echo " 6) 安装/启用 BBR+fq"
   echo " 0) 退出"
   echo "========================================"
-  read -rp "请选择操作 [0-6]: " ans || true
-  case "${ans:-0}" in
+  read -rp "请选择操作 [0-6]: " ans
+  case "$ans" in
     1) do_install ;;
     2) do_update ;;
     3) restart_service ;;
@@ -579,44 +547,30 @@ show_menu() {
     5) do_uninstall ;;
     6) do_enable_bbr ;;
     0) exit 0 ;;
-    *) warn "无效选择"; show_menu ;;
+    *) warn "无效输入" && sleep 1 && show_menu ;;
   esac
 }
 
-#-----------------------------
-# Entry
-#-----------------------------
 main() {
-  is_root || err "请使用 root 权限运行此脚本（sudo 或直接 root）"
+  is_root || err "请使用 root 权限运行此脚本。"
   
-  # 在非交互式远程执行时，自动安装快捷方式
-  if ! [ -t 0 ] ; then
+  # 如果是通过 curl | bash 运行，首次执行时安装自己
+  if [ -t 0 ]; then
     self_install
   fi
 
-  # 支持命令行参数：install/update/uninstall/info/restart/bbr/menu
-  # 也支持第一个参数为 install 等，方便远程执行
-  # e.g. curl ... | sudo bash -s install
-  local cmd="${1:-}"
-  if [[ "$0" == "bash" || "$0" == "sh" ]] && [ -n "$cmd" ]; then
-    shift
-  elif [[ "$0" =~ "singbox" ]]; then
-    cmd="${1:-menu}"
-    shift || true
+  if [ $# -gt 0 ]; then
+    case $1 in
+      install|update|uninstall|info|restart|bbr)
+        "do_$1"
+        ;;
+      *)
+        show_menu
+        ;;
+    esac
   else
-    cmd="menu"
+    show_menu
   fi
-
-  case "$cmd" in
-    install) do_install ;;
-    update) do_update ;;
-    uninstall) do_uninstall ;;
-    info) show_info ;;
-    restart) restart_service ;;
-    bbr) do_enable_bbr ;;
-    # 首次通过 curl | bash 执行时，也显示菜单
-    menu|*) self_install; show_menu ;;
-  esac
 }
 
 main "$@"
@@ -625,26 +579,29 @@ main "$@"
 # 进阶：与 Nginx 共享 443（可选）
 #-----------------------------
 # 如果你必须与 Nginx 共享 443，可以使用 Nginx stream 基于 SNI 分流：
-# 注意：Reality 客户端的 SNI 是伪装域名（如 www.cloudflare.com），
-# 你可以将此类 SNI 的连接转发给 sing-box，其他你的真实域名继续给 Nginx/网站。
-#
-# /etc/nginx/nginx.conf 里添加（需启用 stream 模块）：
+# 在 /etc/nginx/nginx.conf 的 http {} 之外添加 stream {} 块：
 #
 # stream {
-#   map $ssl_preread_server_name $route {
-#     ~^(www\\.cloudflare\\.com|www\\.bing\\.com|www\\.wikipedia\\.org)$ singbox_backend;
-#     default web_backend;
+#   map $ssl_preread_server_name $backend_name {
+#     www.your-website.com      web_backend;
+#     www.cloudflare.com        singbox_backend;
+#     default                   web_backend; # 默认给网站
 #   }
-#   upstream singbox_backend { server 127.0.0.1:8443; } # sing-box 监听端口
-#   upstream web_backend    { server 127.0.0.1:4430; }   # 你原有的 HTTPS 服务，需改到别的端口如 4430
+#
+#   upstream web_backend {
+#     server 127.0.0.1:4430; # 假设你的网站现在监听 4430
+#   }
+#
+#   upstream singbox_backend {
+#     server 127.0.0.1:8443; # sing-box 监听的端口
+#   }
 #
 #   server {
 #     listen 443 reuseport;
 #     listen [::]:443 reuseport;
-#     proxy_pass $route;
+#     proxy_pass $backend_name;
 #     ssl_preread on;
 #   }
 # }
 #
 # 然后：nginx -t && systemctl reload nginx
-# 这样客户端仍用 443，且按 SNI 分流至 sing-box 或 Web。
