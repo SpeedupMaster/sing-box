@@ -422,7 +422,11 @@ do_enable_bbr() {
   fi
 }
 
+
+# 可选：设置你的脚本发布地址，供自安装回源使用
+SCRIPT_URL="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh"   # 例如：SCRIPT_URL="https://your-domain/path/setup-vless-reality.sh"
 #-----------------------------
+
 # Self-install (首次运行自动安装为 singbox/singboxctl)
 #-----------------------------
 self_install() {
