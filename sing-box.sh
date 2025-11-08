@@ -1,19 +1,10 @@
 #!/usr/bin/env bash
 # 一键安装/更新/卸载 sing-box（VLESS + REALITY）+ 安装/启用 BBR+fq
-# 远程短命令：
-#   curl：bash <(curl -fsSL https://your-domain/path/setup-vless-reality.sh)
-#   wget：bash <(wget -qO- https://your-domain/path/setup-vless-reality.sh)
-#
-# 说明与要点：
-#   - 自动安装最新 sing-box（GitHub Releases），并以 systemd 管理
-#   - 生成 Reality 密钥：兼容多种输出格式（禁用彩色解析干扰）
-#   - 修复：VLESS 入站不设置 transport: {"type":"tcp"}（否则报 unknown transport type: tcp）
-#   - 输出 vless 导入链接与 sing-box 客户端示例
-#   - 集成 BBR+fq：先启用再校验，避免陷入“重复升级内核”的循环
-#   - 自安装快捷命令：singbox（/usr/local/bin/singbox -> /usr/local/bin/singboxctl）
-#
-# Tested: Debian 11/12, Ubuntu 20.04/22.04/24.04, CentOS/Alma/Rocky 8/9
-# Arch: amd64, arm64
+# 支持远程短命令：sudo bash <(curl -fsSL https://your-domain/path/setup-vless-reality.sh)
+# 或：sudo bash <(wget -qO- https://your-domain/path/setup-vless-reality.sh)
+# 安装后快捷命令：singbox
+# Tested on: Debian 11/12, Ubuntu 20.04/22.04/24.04, CentOS/Alma/Rocky 8/9
+# Architecture: amd64, arm64
 
 set -euo pipefail
 umask 022
@@ -105,8 +96,9 @@ download_latest_singbox() {
   tmpdir=$(mktemp -d)
   info "获取 sing-box 最新版本..."
   api_json=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest) || err "无法访问 GitHub API（可能网络受限或限速）"
-  url=$(echo "$api_json" | jq -r --arg arch "$ARCH" '.assets[] | select(.name | (contains("linux-"+$arch) and endswith(".tar.gz"))) | .browser_download_url' | head -n1)
-  name=$(echo "$api_json" | jq -r '.name')
+  # 修正 jq 正则匹配，避免特殊字符问题
+  url=$(echo "$api_json" | jq -r ".assets[] | select(.name | contains(\"linux-${ARCH}\") and endswith(\".tar.gz\")) | .browser_download_url" | head -n1)
+  name=$(echo "$api_json" | jq -r ".name")
   [ -n "$url" ] || err "未能找到 sing-box 的下载地址（assets 匹配失败）"
   info "下载：$name / $url"
   curl -fsSL "$url" -o "$tmpdir/singbox.tar.gz" || err "下载失败"
@@ -117,56 +109,7 @@ download_latest_singbox() {
   info "sing-box 已安装到 $BIN_PATH"
 }
 
-# 解析 Reality key 输出（兼容彩色/同一行/下一行/JSON）
-parse_reality_keys() {
-  local text="$1"
-  # 去除 CR 和 ANSI 颜色转义
-  local clean
-  clean=$(printf "%s" "$text" | tr -d '\r' | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g')
-
-  # 1) JSON 解析
-  if echo "$clean" | jq -e . >/dev/null 2>&1; then
-    SB_PRIV_KEY=$(echo "$clean" | jq -r '.private_key // .priv // empty')
-    SB_PUB_KEY=$(echo "$clean"  | jq -r '.public_key  // .pub  // empty')
-    if [ -n "${SB_PRIV_KEY:-}" ] && [ -n "${SB_PUB_KEY:-}" ]; then
-      return 0
-    fi
-  fi
-
-  # 2) 同一行 "Private Key: X" / "Public Key: Y"
-  local priv pub
-  priv=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1}
-    /private[[:space:]]*key/ {
-      if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; exit }
-    }')
-  pub=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1}
-    /public[[:space:]]*key/ {
-      if (match($0, /:[[:space:]]*([A-Za-z0-9_\-+=/]+)/, m)) { print m[1]; exit }
-    }')
-  if [ -n "$priv" ] && [ -n "$pub" ]; then
-    SB_PRIV_KEY="$priv"
-    SB_PUB_KEY="$pub"
-    return 0
-  fi
-
-  # 3) 下一行才是值
-  priv=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1}
-    /private[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit}')
-  pub=$(echo "$clean" | awk 'BEGIN{IGNORECASE=1}
-    /public[[:space:]]*key/ {getline; gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit}')
-  if [ -n "$priv" ] && [ -n "$pub" ]; then
-    SB_PRIV_KEY="$priv"
-    SB_PUB_KEY="$pub"
-    return 0
-  fi
-
-  # 4) 兜底：提取看起来像 key 的 token（Base64/URL-safe）
-  local tokens
-  tokens=$(echo "$clean" | grep -Eo '[A-Za-z0-9_\-+/=]{32,}' | head -n2)
-  SB_PRIV_KEY=${SB_PRIV_KEY:-$(echo "$tokens" | sed -n '1p')}
-  SB_PUB_KEY=${SB_PUB_KEY:-$(echo "$tokens" | sed -n '2p')}
-}
-
+# --- vvv MODIFIED FUNCTION vvv ---
 generate_values() {
   # UUID
   if command -v uuidgen >/dev/null 2>&1; then
@@ -175,42 +118,33 @@ generate_values() {
     SB_UUID=$(cat /proc/sys/kernel/random/uuid)
   fi
 
-  # 如环境变量提供，优先使用（便于手动注入）
-  if [ -n "${SB_PRIV_KEY:-}" ] && [ -n "${SB_PUB_KEY:-}" ]; then
-    info "使用环境变量中的 Reality 密钥对"
+  # Reality keypair
+  local rk_output
+  # 禁用颜色输出并执行命令，优先使用 generate reality-keypair
+  if "$BIN_PATH" help generate | grep -q "reality-keypair"; then
+    rk_output=$(NO_COLOR=1 "$BIN_PATH" generate reality-keypair)
   else
-    # Reality keypair（禁用彩色输出：使用 NO_COLOR=1）
-    local rk_output
-    rk_output=$(env NO_COLOR=1 "$BIN_PATH" generate reality-keypair 2>&1 || true)
-    parse_reality_keys "$rk_output"
+    rk_output=$(NO_COLOR=1 "$BIN_PATH" generate reality-key)
+  fi
+  
+  # 尝试用 jq 按 JSON 格式解析
+  SB_PRIV_KEY=$(echo "$rk_output" | jq -r '.private_key' 2>/dev/null)
+  SB_PUB_KEY=$(echo "$rk_output" | jq -r '.public_key' 2>/dev/null)
 
-    if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
-      rk_output=$(env NO_COLOR=1 "$BIN_PATH" generate reality-key 2>&1 || true)
-      parse_reality_keys "$rk_output"
-    fi
-
-    if [ -z "${SB_PRIV_KEY:-}" ] || [ -z "${SB_PUB_KEY:-}" ]; then
-      echo "[DEBUG] sing-box reality-keypair 输出如下：" >&2
-      echo "--------------------------------" >&2
-      echo "$rk_output" >&2
-      echo "--------------------------------" >&2
-      err "生成 Reality 密钥失败（解析不到 Private/Public Key）"
-    fi
+  # 如果 jq 解析失败，回退到 grep/awk 解析纯文本
+  if [ -z "$SB_PRIV_KEY" ] || [ -z "$SB_PUB_KEY" ]; then
+    info "无法通过 JSON 解析密钥，尝试使用文本模式..."
+    SB_PRIV_KEY=$(echo "$rk_output" | grep 'Private Key' | awk -F': ' '{print $2}')
+    SB_PUB_KEY=$(echo "$rk_output" | grep 'Public Key' | awk -F': ' '{print $2}')
   fi
 
-  # short_id（8~16 hex，取 16）。优先 sing-box 自带，失败则 openssl。
-  if "$BIN_PATH" generate rand --hex 8 >/dev/null 2>&1; then
-    SB_SHORT_ID=$("$BIN_PATH" generate rand --hex 8)
-  else
-    SB_SHORT_ID=$(openssl rand -hex 8)
-  fi
+  [ -n "$SB_PRIV_KEY" ] && [ -n "$SB_PUB_KEY" ] || err "生成 Reality 密钥失败，命令输出：\n$rk_output"
+  info "已生成 Reality 密钥。"
 
-  info "生成参数完成："
-  echo "  UUID:         $SB_UUID"
-  echo "  Public Key:   $SB_PUB_KEY"
-  echo "  Private Key:  $SB_PRIV_KEY"
-  echo "  Short ID:     $SB_SHORT_ID"
+  # short_id（8~16 hex，取 16）
+  SB_SHORT_ID=$(openssl rand -hex 8)
 }
+# --- ^^^ MODIFIED FUNCTION ^^^ ---
 
 write_config() {
   mkdir -p "$CFG_DIR"
@@ -226,6 +160,7 @@ write_config() {
       "users": [
         { "uuid": "${SB_UUID}", "flow": "xtls-rprx-vision" }
       ],
+      "transport": { "type": "tcp" },
       "tls": {
         "enabled": true,
         "server_name": "${SB_SNI_DOMAIN}",
@@ -331,6 +266,8 @@ gen_vless_link() {
   uuid=$(jq -r '.uuid' "$META_PATH")
   addr=$(jq -r '.client_server_addr' "$META_PATH")
   port=$(jq -r '.listen_port' "$META_PATH")
+  # URL encode the name
+  name=$(echo "$name" | jq -sRr @uri)
   echo "vless://${uuid}@${addr}:${port}?encryption=none&security=reality&type=tcp&flow=xtls-rprx-vision&pbk=${pbk}&sid=${sid}&sni=${sni}&fp=chrome#${name}"
 }
 
@@ -368,7 +305,7 @@ $(gen_vless_link "VLESS-REALITY")
   "server_port": ${meta_port},
   "uuid": "${meta_uuid}",
   "flow": "xtls-rprx-vision",
-  "network": "tcp",
+  "transport": { "type": "tcp" },
   "tls": {
     "enabled": true,
     "server_name": "${meta_sni}",
@@ -395,21 +332,8 @@ kernel_info() {
   uname -r
 }
 
-# 检测是否“具备”BBR（支持即可，不要求已启用）
 has_bbr() {
-  # 1) sysctl 列表中已有 bbr
-  if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
-    return 0
-  fi
-  # 2) 模块存在（但可能未加载）
-  if command -v modinfo >/dev/null 2>&1 && modinfo tcp_bbr >/dev/null 2>&1; then
-    return 0
-  fi
-  # 3) 文件存在（某些系统没有 modinfo）
-  if ls /lib/modules/"$(uname -r)"/kernel/net/ipv4/tcp_bbr.* >/dev/null 2>&1; then
-    return 0
-  fi
-  return 1
+  sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr
 }
 
 enable_bbr_fq() {
@@ -475,80 +399,41 @@ upgrade_kernel_for_bbr() {
 
 do_enable_bbr() {
   detect_os
-
-  # 无论如何先尝试启用（加载模块 + 写配置 + 应用）
-  enable_bbr_fq
-
-  # 再次验证当前状态
-  local cc qdisc available
-  cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
-  qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "")
-  available=$(sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "")
-
-  if [[ "$cc" == "bbr" && "$qdisc" == "fq" ]]; then
-    info "BBR+fq 已启用（cc=$cc, qdisc=$qdisc）"
-    return 0
-  fi
-
-  # 若还未启用，但系统具备 BBR，则提示手动检查（不再强制升级内核）
   if has_bbr; then
-    warn "系统具备 BBR，但当前未生效（cc=$cc, qdisc=$qdisc）。"
-    warn "请执行：modprobe tcp_bbr && sysctl --system，然后重试菜单 6。"
-    return 0
-  fi
-
-  # 确实不具备 BBR 支持，才询问是否升级内核
-  warn "当前内核未包含 BBR 支持（$(kernel_info)）。"
-  if yes_or_no "是否自动尝试升级到较新内核以支持 BBR？（需要重启）" "N"; then
-    upgrade_kernel_for_bbr
+    enable_bbr_fq
   else
-    warn "已取消内核升级。你也可以手动升级内核到 >= 4.9 后，再执行菜单 6 启用 BBR+fq。"
+    warn "当前内核可能不支持 BBR（$(kernel_info)），或未启用 TCP BBR 模块。"
+    if yes_or_no "是否自动尝试升级到较新内核以支持 BBR？（需要重启）" "N"; then
+      upgrade_kernel_for_bbr
+    else
+      warn "已取消内核升级。你可手动升级内核后再执行菜单 6 启用 BBR+fq。"
+    fi
   fi
 }
 
 #-----------------------------
 # Self-install (首次运行自动安装为 singbox/singboxctl)
 #-----------------------------
-# 可选：设置你的脚本发布地址，供自安装回源使用
-SCRIPT_URL="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh"   # 例如：SCRIPT_URL="https://your-domain/path/setup-vless-reality.sh"
-
 self_install() {
+  # 当前脚本路径（可能是 /dev/fd/* 或本地文件）
   local src="${BASH_SOURCE[0]:-}"
-
-  # 已安装过：仅确保快捷命令存在
-  if [ -x "$SELF_PATH" ]; then
-    ln -sf "$SELF_PATH" "$LINK_PATH"
+  if [ -z "$src" ]; then
+    warn "无法确定脚本来源路径，跳过自安装。你可手动保存为 $SELF_PATH 并链接到 $LINK_PATH"
     return 0
   fi
-
-  # 来源是可读的“普通文件”，直接复制整个文件（不会受读指针影响）
-  if [ -n "$src" ] && [ -f "$src" ]; then
-    install -m 0755 "$src" "$SELF_PATH"
-    ln -sf "$SELF_PATH" "$LINK_PATH"
-    info "已安装快捷命令：singbox（路径：$LINK_PATH）"
-    return 0
-  fi
-
-  # 来源不是普通文件（如 /dev/fd/63），尝试回源下载
-  if [ -n "${SCRIPT_URL:-}" ]; then
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL "$SCRIPT_URL" -o "$SELF_PATH" || err "无法从 SCRIPT_URL 拉取脚本：$SCRIPT_URL"
-    elif command -v wget >/dev/null 2>&1; then
-      wget -qO "$SELF_PATH" "$SCRIPT_URL" \vert{}\vert{} err "无法从 SCRIPT_URL 拉取脚本：$SCRIPT_URL"
+  if [ "$src" != "$SELF_PATH" ]; then
+    # 确保 /usr/local/bin 存在
+    mkdir -p /usr/local/bin
+    if [ -w "/usr/local/bin" ]; then
+      # 复制自身到目标位置
+      cat "$src" > "$SELF_PATH"
+      chmod +x "$SELF_PATH"
+      ln -sf "$SELF_PATH" "$LINK_PATH"
+      info "已安装快捷命令：singbox（路径：$LINK_PATH）"
     else
-      err "缺少 curl/wget，且无法从 BASH_SOURCE 复制，无法自安装"
+      warn "/usr/local/bin 不可写，跳过快捷命令安装。"
     fi
-    chmod +x "$SELF_PATH"
-    ln -sf "$SELF_PATH" "$LINK_PATH"
-    info "已从 SCRIPT_URL 自安装并创建快捷命令：singbox"
-    return 0
   fi
-
-  # 否则：明确提示并跳过（避免写入截断内容）
-  warn "脚本当前来源不是普通文件（可能是 /dev/fd/* 的流）。为避免截断，已跳过自安装。"
-  warn "建议使用以下任一方式完成安装："
-  echo "  1) curl -fsSL <URL> -o /usr/local/bin/singboxctl && chmod +x /usr/local/bin/singboxctl && ln -sf /usr/local/bin/singboxctl /usr/local/bin/singbox"
-  echo "  2) curl -fsSL <URL> \vert{} sudo tee /usr/local/bin/singboxctl >/dev/null && sudo chmod +x /usr/local/bin/singboxctl && sudo ln -sf /usr/local/bin/singboxctl /usr/local/bin/singbox"
 }
 
 #-----------------------------
@@ -607,6 +492,7 @@ do_update() {
   download_latest_singbox
   systemctl restart sing-box || true
   info "已更新并重启 sing-box"
+  "$BIN_PATH" version
   if [ -f "$META_PATH" ]; then
     print_client_guide
   else
@@ -618,7 +504,7 @@ do_update() {
 # Uninstall
 #-----------------------------
 do_uninstall() {
-  local listen_port
+  local listen_port=""
   if [ -f "$META_PATH" ]; then
     listen_port=$(jq -r '.listen_port' "$META_PATH" 2>/dev/null || echo "")
   fi
@@ -628,26 +514,23 @@ do_uninstall() {
   rm -f "$SVC_PATH"
   systemctl daemon-reload
 
-  if [ -n "${listen_port:-}" ]; then
+  if [ -n "${listen_port}" ]; then
     close_firewall_port "$listen_port"
   fi
 
   echo
-  warn "是否删除二进制和配置文件？此操作不可恢复。"
-  echo "1) 删除全部（包含二进制 / 配置 / 元数据）"
-  echo "2) 仅删除服务（保留二进制与配置）"
-  read -rp "请选择 [1/2]: " choice || true
+  warn "是否删除 sing-box 的所有文件？此操作不可恢复。"
+  echo "1) 是，删除全部（可执行文件、配置文件、快捷命令）"
+  echo "2) 否，仅停止并禁用服务（保留所有文件）"
+  read -rp "请选择 [1/2] (默认 2): " choice || true
   case "${choice:-2}" in
     1)
-      rm -f "$BIN_PATH"
+      rm -f "$BIN_PATH" "$SELF_PATH" "$LINK_PATH"
       rm -rf "$CFG_DIR"
-      info "已删除二进制与配置文件"
-      ;;
-    2)
-      info "仅移除服务，保留二进制与配置"
+      info "已删除 sing-box 所有相关文件"
       ;;
     *)
-      info "未选择有效项，默认保留二进制与配置"
+      info "仅移除 systemd 服务，保留二进制与配置文件"
       ;;
   esac
   info "卸载完成"
@@ -667,12 +550,15 @@ show_info() {
 restart_service() {
   systemctl restart sing-box
   info "已重启 sing-box 服务"
+  sleep 1
+  systemctl status sing-box --no-pager -l
 }
 
 #-----------------------------
 # Menu
 #-----------------------------
 show_menu() {
+  clear
   echo "========================================"
   echo " sing-box (VLESS REALITY) 管理菜单"
   echo "----------------------------------------"
@@ -693,7 +579,7 @@ show_menu() {
     5) do_uninstall ;;
     6) do_enable_bbr ;;
     0) exit 0 ;;
-    *) warn "无效选择";;
+    *) warn "无效选择"; show_menu ;;
   esac
 }
 
@@ -702,16 +588,34 @@ show_menu() {
 #-----------------------------
 main() {
   is_root || err "请使用 root 权限运行此脚本（sudo 或直接 root）"
-  self_install
+  
+  # 在非交互式远程执行时，自动安装快捷方式
+  if ! [ -t 0 ] ; then
+    self_install
+  fi
+
   # 支持命令行参数：install/update/uninstall/info/restart/bbr/menu
-  case "${1:-menu}" in
-    install) shift; do_install ;;
-    update) shift; do_update ;;
-    uninstall) shift; do_uninstall ;;
-    info) shift; show_info ;;
-    restart) shift; restart_service ;;
-    bbr) shift; do_enable_bbr ;;
-    menu|*) show_menu ;;
+  # 也支持第一个参数为 install 等，方便远程执行
+  # e.g. curl ... | sudo bash -s install
+  local cmd="${1:-}"
+  if [[ "$0" == "bash" || "$0" == "sh" ]] && [ -n "$cmd" ]; then
+    shift
+  elif [[ "$0" =~ "singbox" ]]; then
+    cmd="${1:-menu}"
+    shift || true
+  else
+    cmd="menu"
+  fi
+
+  case "$cmd" in
+    install) do_install ;;
+    update) do_update ;;
+    uninstall) do_uninstall ;;
+    info) show_info ;;
+    restart) restart_service ;;
+    bbr) do_enable_bbr ;;
+    # 首次通过 curl | bash 执行时，也显示菜单
+    menu|*) self_install; show_menu ;;
   esac
 }
 
@@ -720,20 +624,27 @@ main "$@"
 #-----------------------------
 # 进阶：与 Nginx 共享 443（可选）
 #-----------------------------
-# 若需与 Nginx 共享 443，可用 Nginx stream 基于 SNI 分流：
+# 如果你必须与 Nginx 共享 443，可以使用 Nginx stream 基于 SNI 分流：
+# 注意：Reality 客户端的 SNI 是伪装域名（如 www.cloudflare.com），
+# 你可以将此类 SNI 的连接转发给 sing-box，其他你的真实域名继续给 Nginx/网站。
+#
+# /etc/nginx/nginx.conf 里添加（需启用 stream 模块）：
 #
 # stream {
 #   map $ssl_preread_server_name $route {
-#     ~^(www\\.cloudflare\\.com|www\\.bing\\.com|www\\.wikipedia\\.org)$ singbox;
-#     default web;
+#     ~^(www\\.cloudflare\\.com|www\\.bing\\.com|www\\.wikipedia\\.org)$ singbox_backend;
+#     default web_backend;
 #   }
 #   upstream singbox_backend { server 127.0.0.1:8443; } # sing-box 监听端口
-#   upstream web_backend    { server 127.0.0.1:443; }   # 你原有的服务（或更改端口）
+#   upstream web_backend    { server 127.0.0.1:4430; }   # 你原有的 HTTPS 服务，需改到别的端口如 4430
 #
 #   server {
 #     listen 443 reuseport;
+#     listen [::]:443 reuseport;
 #     proxy_pass $route;
 #     ssl_preread on;
 #   }
 # }
-# nginx -t && systemctl reload nginx
+#
+# 然后：nginx -t && systemctl reload nginx
+# 这样客户端仍用 443，且按 SNI 分流至 sing-box 或 Web。
