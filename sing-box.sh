@@ -120,6 +120,7 @@ install_sing-box() {
     case ${ARCH} in
     x86_64) ARCH="amd64" ;;
     aarch64) ARCH="arm64" ;;
+    *) log_error "不支持的系统架构: ${ARCH}" ;;
     esac
 
     LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r ".tag_name" | sed 's/v//')
@@ -132,7 +133,8 @@ install_sing-box() {
     curl -fsSL -o /tmp/sing-box.tar.gz "${DOWNLOAD_URL}"
     
     tar -xzf /tmp/sing-box.tar.gz -C /tmp
-    mv "/tmp/sing-box-${LATEST_VERSION}-linux-${ARCH}/sing-box" "${SINGBOX_BINARY_PATH}"
+    INSTALL_DIR="/tmp/sing-box-${LATEST_VERSION}-linux-${ARCH}"
+    mv "${INSTALL_DIR}/sing-box" "${SINGBOX_BINARY_PATH}"
     chmod +x "${SINGBOX_BINARY_PATH}"
 
     generate_config
@@ -158,17 +160,23 @@ generate_config() {
     log_info "正在生成配置文件..."
     mkdir -p "${SINGBOX_CONFIG_PATH}"
     
-    local UUID=$(sing-box generate uuid)
-    local KEY_PAIR=$(sing-box generate reality-keypair)
+    local UUID=$(${SINGBOX_BINARY_PATH} generate uuid)
+    local KEY_PAIR=$(${SINGBOX_BINARY_PATH} generate reality-keypair)
     local PRIVATE_KEY=$(echo "${KEY_PAIR}" | awk '/PrivateKey/ {print $2}' | tr -d '"')
     local PUBLIC_KEY=$(echo "${KEY_PAIR}" | awk '/PublicKey/ {print $2}' | tr -d '"')
     local SHORT_ID=$(openssl rand -hex 8)
     
+    # Save public key in the config for later retrieval, sing-box ignores unknown fields.
     cat > "${SINGBOX_CONFIG_FILE}" <<EOF
 {
   "log": {
     "level": "info",
     "timestamp": true
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true
+    }
   },
   "x_public_key": "${PUBLIC_KEY}",
   "inbounds": [
@@ -225,7 +233,7 @@ After=network.target nss-lookup.target
 [Service]
 User=root
 WorkingDirectory=${SINGBOX_CONFIG_PATH}
-ExecStart=${SINGBOX_BINARY_PATH} run
+ExecStart=${SINGBOX_BINARY_PATH} run -c ${SINGBOX_CONFIG_FILE}
 Restart=on-failure
 RestartSec=10
 LimitNPROC=infinity
@@ -237,7 +245,7 @@ EOF
 }
 
 uninstall_sing-box() {
-    log_warning "确定要卸载 sing-box 吗? [y/N]"
+    log_warning "确定要卸载 sing-box 吗? 这会删除所有配置文件。 [y/N]"
     read -r -p "请输入: " confirm
     if [[ ! "$confirm" =~ ^[yY]$ ]]; then
         log_info "卸载操作已取消。"
@@ -256,8 +264,7 @@ uninstall_sing-box() {
     
     if grep -q "alias ${SHORTCUT_NAME}=" ~/.bashrc; then
         sed -i "/alias ${SHORTCUT_NAME}=/d" ~/.bashrc
-        source ~/.bashrc
-        log_info "已从 ~/.bashrc 中移除快捷命令。"
+        log_info "已从 ~/.bashrc 中移除快捷命令。请运行 'source ~/.bashrc' 或重新登录生效。"
     fi
 
     systemctl daemon-reload
@@ -265,13 +272,63 @@ uninstall_sing-box() {
 }
 
 update_sing-box() {
-    # implementation remains the same
-    # ...
+    log_info "正在检查更新..."
+    CURRENT_VERSION=$(${SINGBOX_BINARY_PATH} version 2>/dev/null | awk 'NR==1{print $3}')
+    if [ -z "$CURRENT_VERSION" ]; then
+        log_error "无法获取当前版本，请确认 sing-box 是否已安装。"
+        return
+    fi
+
+    LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r ".tag_name" | sed 's/v//')
+    if [ -z "$LATEST_VERSION" ]; then
+        log_error "无法从 GitHub API 获取最新的 sing-box 版本号。"
+    fi
+
+    if [ "$CURRENT_VERSION" == "$LATEST_VERSION" ]; then
+        log_success "您已安装最新版本: v${CURRENT_VERSION}"
+        return
+    fi
+ 
+    log_info "发现新版本 v${LATEST_VERSION}，正在更新..."
+    ARCH=$(uname -m)
+    case ${ARCH} in
+    x86_64) ARCH="amd64" ;;
+    aarch64) ARCH="arm64" ;;
+    *) log_error "不支持的系统架构: ${ARCH}" ;;
+    esac
+    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
+
+    curl -fsSL -o /tmp/sing-box.tar.gz "${DOWNLOAD_URL}"
+    tar -xzf /tmp/sing-box.tar.gz -C /tmp
+    
+    systemctl stop sing-box
+    INSTALL_DIR="/tmp/sing-box-${LATEST_VERSION}-linux-${ARCH}"
+    mv "${INSTALL_DIR}/sing-box" "${SINGBOX_BINARY_PATH}"
+    chmod +x "${SINGBOX_BINARY_PATH}"
+    systemctl start sing-box
+    
+    if systemctl is-active --quiet sing-box; then
+        log_success "sing-box 已成功更新至 v${LATEST_VERSION}！"
+    else
+        log_error "更新后启动失败，请检查日志。"
+    fi
+     
+    rm -rf /tmp/sing-box*
 }
 
 save_script() {
-    # implementation remains the same
-    # ...
+    log_info "正在保存管理脚本以便后续使用..."
+    cp -f "$0" "${SCRIPT_PATH}"
+    chmod +x "${SCRIPT_PATH}"
+
+    if ! command -v ${SHORTCUT_NAME} &>/dev/null || [[ $(type -P ${SHORTCUT_NAME}) != ${SCRIPT_PATH} ]]; then
+         if grep -q "alias ${SHORTCUT_NAME}=" ~/.bashrc; then
+            sed -i "/alias ${SHORTCUT_NAME}=/d" ~/.bashrc
+        fi
+        echo "alias ${SHORTCUT_NAME}='${SCRIPT_PATH}'" >> ~/.bashrc
+        log_success "已创建快捷命令 '${SHORTCUT_NAME}'。"
+        log_info "请运行 'source ~/.bashrc' 或重新登录SSH以使命令生效。"
+    fi
 }
 
 display_node_info() {
@@ -286,20 +343,28 @@ display_node_info() {
     SHORT_ID=$(jq -r '.inbounds[0].tls.reality.short_id[0]' "${SINGBOX_CONFIG_FILE}")
     SERVER_NAME=$(jq -r '.inbounds[0].tls.server_name' "${SINGBOX_CONFIG_FILE}")
     IP_ADDR=$(curl -s4 ip.sb || curl -s4 ifconfig.me)
-    NODE_NAME="vless-reality-$(date +%s)"
+    NODE_NAME="vps-$(echo $IP_ADDR | tr '.' '-')-$(date +%s)"
+    
+    if [ -z "$PUBLIC_KEY" ] || [ "$PUBLIC_KEY" == "null" ]; then
+        log_error "无法从配置文件中读取公钥。可能是旧版本脚本安装的，请卸载后重新安装。"
+        return
+    fi
     
     VLESS_LINK="vless://${UUID}@${IP_ADDR}:${CFG_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SERVER_NAME}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
 
+    clear
     echo -e "=================================================="
-    log_success "节点配置信息:"
+    log_success "         节点配置信息"
+    echo -e "=================================================="
     echo -e "  ${YELLOW}地址 (Address):${NC} ${IP_ADDR}"
     echo -e "  ${YELLOW}端口 (Port):${NC} ${CFG_PORT}"
     echo -e "  ${YELLOW}UUID:${NC} ${UUID}"
     echo -e "  ${YELLOW}流控 (Flow):${NC} xtls-rprx-vision"
     echo -e "  ${YELLOW}安全 (Security):${NC} reality"
     echo -e "  ${YELLOW}SNI:${NC} ${SERVER_NAME}"
-    echo -e "  ${YELLOW}公钥 (Public Key):${NC} ${PUBLIC_KEY}"
-    echo -e "  ${YELLOW}Short ID:${NC} ${SHORT_ID}"
+    echo -e "  ${YELLOW}公钥 (Public Key / pbk):${NC} ${PUBLIC_KEY}"
+    echo -e "  ${YELLOW}Short ID (sid):${NC} ${SHORT_ID}"
+    echo -e "  ${YELLOW}指纹 (Fingerprint / fp):${NC} chrome"
     echo -e "=================================================="
     log_success "VLESS 导入链接:"
     echo -e "${GREEN}${VLESS_LINK}${NC}"
@@ -307,8 +372,6 @@ display_node_info() {
     log_success "二维码 (请使用客户端扫描):"
     qrencode -t ANSIUTF8 "${VLESS_LINK}"
     echo -e "=================================================="
-    
-    # functions update_sing-box and save_script are complete in the full script above
 }
 
 #--- Main Menu ---#
@@ -337,7 +400,7 @@ main_menu() {
             systemctl restart sing-box
             log_success "Sing-box 已重启。"
         else
-            log_error "Sing-box 服务不存在。"
+            log_error "Sing-box 服务不存在，请先安装。"
         fi
         ;;
     5) display_node_info ;;
@@ -350,4 +413,26 @@ main_menu() {
 check_root
 check_os
 
-main_menu
+# Check if script is run with arguments
+if [[ $# -gt 0 ]]; then
+    case $1 in
+        install|--install)
+            install_sing-box
+            ;;
+        uninstall|--uninstall)
+            uninstall_sing-box
+            ;;
+        update|--update)
+            update_sing-box
+            ;;
+        info|--info)
+            display_node_info
+            ;;
+        *)
+            echo -e "${RED}未知参数: $1${NC}"
+            main_menu
+            ;;
+    esac
+else
+    main_menu
+fi
