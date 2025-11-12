@@ -3,7 +3,7 @@
 #====================================================
 # Script to install Sing-Box VLESS Reality on VPS
 # Author: Your Name
-# Version: 1.2.0
+# Version: 1.3.0
 #====================================================
 
 #--- Colors ---#
@@ -20,6 +20,7 @@ SINGBOX_BINARY_PATH="/usr/local/bin/sing-box"
 SINGBOX_SERVICE_FILE="/etc/systemd/system/sing-box.service"
 SCRIPT_PATH="/usr/local/bin/singbox-manager" # Path to save this script
 SHORTCUT_NAME="singbox"
+LISTEN_PORT=443 # Default port
 
 #--- Helper Functions ---#
 log_info() {
@@ -53,16 +54,9 @@ check_os() {
     fi
 }
 
-check_port() {
-    local port=$1
-    if lsof -i:"${port}" &>/dev/null; then
-        log_error "端口 ${port} 已被占用。请先停止占用该端口的程序再运行此脚本。"
-    fi
-}
-
 #--- Dependency Installation ---#
 install_dependencies() {
-    log_info "正在安装必要的依赖包 (curl, jq, qrencode)..."
+    log_info "正在安装必要的依赖包 (curl, jq, qrencode, lsof)..."
     if command -v apt-get &>/dev/null; then
         apt-get update -y && apt-get install -y curl jq qrencode lsof
     elif command -v dnf &>/dev/null; then
@@ -74,6 +68,31 @@ install_dependencies() {
     fi
 }
 
+#--- Port selection ---#
+check_and_set_port() {
+    if lsof -i:"${LISTEN_PORT}" &>/dev/null; then
+        log_warning "默认端口 ${LISTEN_PORT} 已被占用。"
+        while true; do
+            read -r -p "请输入一个新的可用端口 (例如 8443, 2053): " NEW_PORT
+            # Validate if it's a number and in range
+            if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; then
+                log_warning "无效的端口号。请输入 1-65535 之间的数字。"
+                continue
+            fi
+            # Check if the new port is available
+            if lsof -i:"${NEW_PORT}" &>/dev/null; then
+                log_warning "端口 ${NEW_PORT} 仍然被占用。请换一个。"
+            else
+                LISTEN_PORT=${NEW_PORT}
+                log_success "将使用新端口: ${LISTEN_PORT}"
+                break
+            fi
+        done
+    else
+        log_info "默认端口 ${LISTEN_PORT} 可用。"
+    fi
+}
+
 #--- BBR Installation ---#
 install_bbr() {
     log_info "正在检查并安装最新版 BBR..."
@@ -81,8 +100,8 @@ install_bbr() {
         log_success "BBR 已经启用。"
     else
         log_info "正在启用 BBR + fq..."
-        echo "net.core.default_qdisc=fq" | sudo tee -a /etc/sysctl.conf
-        echo "net.ipv4.tcp_congestion_control=bbr" | sudo tee -a /etc/sysctl.conf
+        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
         sysctl -p
         if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
             log_success "BBR + fq 已成功启用！"
@@ -95,8 +114,9 @@ install_bbr() {
 #--- Core Functions ---#
 install_sing-box() {
     log_info "开始安装 sing-box..."
-    check_port 443
+    
     install_dependencies
+    check_and_set_port # Check and set port before proceeding
 
     # Get system architecture
     ARCH=$(uname -m)
@@ -156,10 +176,8 @@ generate_config() {
     local UUID=$(sing-box generate uuid)
     local KEY_PAIR=$(sing-box generate reality-keypair)
     local PRIVATE_KEY=$(echo "${KEY_PAIR}" | awk '/PrivateKey/ {print $2}')
-    local PUBLIC_KEY=$(echo "${KEY_PAIR}" | awk '/PublicKey/ {print $2}')
     local SHORT_ID=$(openssl rand -hex 8)
-    local IP_ADDR=$(curl -s4 ip.sb)
-
+    
     cat > "${SINGBOX_CONFIG_FILE}" <<EOF
 {
   "log": {
@@ -171,7 +189,7 @@ generate_config() {
       "type": "vless",
       "tag": "vless-in",
       "listen": "::",
-      "listen_port": 443,
+      "listen_port": ${LISTEN_PORT},
       "sniff": true,
       "sniff_override_destination": true,
       "users": [
@@ -252,6 +270,7 @@ uninstall_sing-box() {
     # Remove alias
     if grep -q "alias ${SHORTCUT_NAME}=" ~/.bashrc; then
         sed -i "/alias ${SHORTCUT_NAME}=/d" ~/.bashrc
+        source ~/.bashrc
         log_info "已从 ~/.bashrc 中移除快捷命令。"
     fi
 
@@ -261,7 +280,12 @@ uninstall_sing-box() {
 
 update_sing-box() {
     log_info "正在检查更新..."
-    CURRENT_VERSION=$(${SINGBOX_BINARY_PATH} version | awk 'NR==1{print $3}')
+    CURRENT_VERSION=$(${SINGBOX_BINARY_PATH} version 2>/dev/null | awk 'NR==1{print $3}')
+    if [ -z "$CURRENT_VERSION" ]; then
+        log_error "无法获取当前版本，请确认 sing-box 是否已安装。"
+        return
+    fi
+
     LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r ".tag_name" | sed 's/v//')
 
     if [ "$CURRENT_VERSION" == "$LATEST_VERSION" ]; then
@@ -318,22 +342,22 @@ display_node_info() {
         return
     fi
     
+    # Read info directly from the config file to ensure accuracy
+    CFG_PORT=$(jq -r '.inbounds[0].listen_port' "${SINGBOX_CONFIG_FILE}")
     UUID=$(jq -r '.inbounds[0].users[0].uuid' "${SINGBOX_CONFIG_FILE}")
     PRIVATE_KEY=$(jq -r '.inbounds[0].tls.reality.private_key' "${SINGBOX_CONFIG_FILE}")
     PUBLIC_KEY=$(sing-box generate reality-keypair --private-key "${PRIVATE_KEY}" | awk '/PublicKey/ {print $2}')
     SHORT_ID=$(jq -r '.inbounds[0].tls.reality.short_id[0]' "${SINGBOX_CONFIG_FILE}")
-    IP_ADDR=$(curl -s4 ip.sb)
     SERVER_NAME=$(jq -r '.inbounds[0].tls.server_name' "${SINGBOX_CONFIG_FILE}")
-    
+    IP_ADDR=$(curl -s4 ip.sb || curl -s4 ifconfig.me)
     NODE_NAME="vless-reality-$(date +%s)"
     
-    # vless://<uuid>@<host>:<port>?encryption=none&flow=xtls-rprx-vision&security=reality&sni=<sni>&fp=chrome&pbk=<pbk>&sid=<sid>&type=tcp&headerType=none#<name>
-    VLESS_LINK="vless://${UUID}@${IP_ADDR}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SERVER_NAME}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
+    VLESS_LINK="vless://${UUID}@${IP_ADDR}:${CFG_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SERVER_NAME}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
 
     echo -e "=================================================="
     log_success "节点配置信息:"
     echo -e "  ${YELLOW}地址 (Address):${NC} ${IP_ADDR}"
-    echo -e "  ${YELLOW}端口 (Port):${NC} 443"
+    echo -e "  ${YELLOW}端口 (Port):${NC} ${CFG_PORT}"
     echo -e "  ${YELLOW}UUID:${NC} ${UUID}"
     echo -e "  ${YELLOW}流控 (Flow):${NC} xtls-rprx-vision"
     echo -e "  ${YELLOW}加密 (Encryption):${NC} none"
@@ -379,8 +403,12 @@ main_menu() {
         update_sing-box
         ;;
     4)
-        systemctl restart sing-box
-        log_success "Sing-box 已重启。"
+        if systemctl is-active --quiet sing-box; then
+            systemctl restart sing-box
+            log_success "Sing-box 已重启。"
+        else
+            log_error "Sing-box 未安装或未在运行。"
+        fi
         ;;
     5)
         display_node_info
@@ -400,16 +428,16 @@ check_os
 
 if [[ $# -gt 0 ]]; then
     case $1 in
-        install)
+        install|--install)
             install_sing-box
             ;;
-        uninstall)
+        uninstall|--uninstall)
             uninstall_sing-box
             ;;
-        update)
+        update|--update)
             update_sing-box
             ;;
-        info)
+        info|--info)
             display_node_info
             ;;
         *)
