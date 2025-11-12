@@ -3,7 +3,7 @@
 #====================================================
 # Script to install Sing-Box VLESS Reality on VPS
 # Author: Your Name
-# Version: 1.5.1 (Expanded SNI list with user contribution)
+# Version: 1.6.0 (Add BBR+FQ status checker)
 #====================================================
 
 #--- Colors ---#
@@ -26,42 +26,15 @@ SELECTED_SNI=""
 
 # A comprehensive list of high-availability domains for random SNI
 SNI_LIST=(
-    # Apple
-    "gateway.icloud.com"
-    "itunes.apple.com"
-    "swdist.apple.com"
-    "swcdn.apple.com"
-    "updates.cdn-apple.com"
-    "mensura.cdn-apple.com"
-    "osxapps.itunes.apple.com"
-    "aod.itunes.apple.com"
-    # Mozilla
-    "download-installer.cdn.mozilla.net"
-    "addons.mozilla.org"
-    # CDN & Cloud
-    "s0.awsstatic.com"
-    "d1.awsstatic.com"
-    "cdn-dynmedia-1.microsoft.com"
-    "www.cloudflare.com"
-    # Amazon
-    "images-na.ssl-images-amazon.com"
-    "m.media-amazon.com"
-    # Google
-    "dl.google.com"
-    "www.google-analytics.com"
-    # Microsoft
-    "www.microsoft.com"
-    "software.download.prss.microsoft.com"
-    # Others
-    "player.live-video.net"
-    "one-piece.com"
-    "lol.secure.dyn.riotcdn.net"
-    "www.lovelive-anime.jp"
-    "www.swift.com"
-    "academy.nvidia.com"
-    "www.cisco.com"
-    "www.samsung.com"
-    "www.amd.com"
+    "gateway.icloud.com", "itunes.apple.com", "swdist.apple.com", "swcdn.apple.com",
+    "updates.cdn-apple.com", "mensura.cdn-apple.com", "osxapps.itunes.apple.com",
+    "aod.itunes.apple.com", "download-installer.cdn.mozilla.net", "addons.mozilla.org",
+    "s0.awsstatic.com", "d1.awsstatic.com", "cdn-dynmedia-1.microsoft.com", "www.cloudflare.com",
+    "images-na.ssl-images-amazon.com", "m.media-amazon.com", "dl.google.com",
+    "www.google-analytics.com", "www.microsoft.com", "software.download.prss.microsoft.com",
+    "player.live-video.net", "one-piece.com", "lol.secure.dyn.riotcdn.net",
+    "www.lovelive-anime.jp", "www.swift.com", "academy.nvidia.com", "www.cisco.com",
+    "www.samsung.com", "www.amd.com"
 )
 
 #--- Helper Functions ---#
@@ -122,16 +95,60 @@ prompt_for_sni() {
     fi
 }
 install_bbr() {
-    if ! sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+    log_info "检查并安装 BBR..."
+    if sysctl -n net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        log_success "BBR 已经启用。"
+    else
         log_info "正在启用 BBR + fq..."
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
         sysctl -p &>/dev/null
-        log_success "BBR + fq 已启用。"
+    fi
+    # Final check and report
+    if sysctl -n net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        log_success "TCP 拥塞控制算法已设置为 bbr。"
     else
-        log_info "BBR 已经启用。"
+        log_warning "BBR 启用失败，当前算法: $(sysctl -n net.ipv4.tcp_congestion_control)。"
+    fi
+    if sysctl -n net.core.default_qdisc | grep -q "fq"; then
+        log_success "队列调度算法已设置为 fq。"
+    else
+        log_warning "队列调度算法设置 fq 失败，当前算法: $(sysctl -n net.core.default_qdisc)。"
     fi
 }
+
+check_bbr_status() {
+    clear
+    log_info "正在检查 BBR 和 FQ 状态..."
+    sleep 1
+
+    local bbr_status=$(sysctl -n net.ipv4.tcp_congestion_control)
+    local qdisc_status=$(sysctl -n net.core.default_qdisc)
+
+    echo -e "===================================================="
+    echo -e "          BBR + FQ 状态检查结果"
+    echo -e "===================================================="
+
+    if [[ "$bbr_status" == "bbr" ]]; then
+        echo -e "  ${GREEN}✅ TCP 拥塞控制算法: bbr (已启用)${NC}"
+    else
+        echo -e "  ${RED}❌ TCP 拥塞控制算法: ${bbr_status} (BBR 未启用)${NC}"
+    fi
+
+    if [[ "$qdisc_status" == "fq" ]]; then
+        echo -e "  ${GREEN}✅ 默认队列调度算法: fq (已启用)${NC}"
+    else
+        echo -e "  ${YELLOW}⚠️  默认队列调度算法: ${qdisc_status} (建议使用 fq 以获最佳性能)${NC}"
+    fi
+
+    echo -e "===================================================="
+    echo -e "\n按任意键返回主菜单..."
+    # -n 1: read only 1 character
+    # -s: do not echo input character
+    # -r: raw mode
+    read -n 1 -s -r
+}
+
 generate_config() {
     log_info "正在生成配置文件..."
     mkdir -p "${SINGBOX_CONFIG_PATH}"
@@ -161,7 +178,8 @@ generate_config() {
 }
 EOF
 }
-create_service() {
+
+create_service() { # ... same as before
     log_info "正在创建 systemd 服务..."
     cat > "${SINGBOX_SERVICE_FILE}" <<EOF
 [Unit]
@@ -177,7 +195,7 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 }
-save_script() {
+save_script() { # ... same as before
     log_info "正在保存管理脚本..."
     if [ -z "$SCRIPT_URL" ]; then
         log_warning "无法确定脚本的下载 URL，无法创建快捷命令。"
@@ -194,7 +212,8 @@ save_script() {
         log_error "从 ${SCRIPT_URL} 下载脚本失败，无法保存管理脚本。"
     fi
 }
-install_sing-box() {
+
+install_sing-box() { # ... same as before, simplified for brevity in this view
     log_info "开始安装 sing-box..."
     [ -f "${SINGBOX_CONFIG_FILE}" ] && log_error "sing-box 已安装，请不要重复执行。"
     install_dependencies
@@ -229,7 +248,7 @@ install_sing-box() {
     fi
     rm -rf /tmp/sing-box*
 }
-uninstall_sing-box() {
+uninstall_sing-box() { # ... same as before
     log_warning "确定要卸载 sing-box 吗? [y/N]"
     read -r -p "请输入: " confirm
     [[ ! "$confirm" =~ ^[yY]$ ]] && log_info "卸载操作已取消。" && return
@@ -244,7 +263,7 @@ uninstall_sing-box() {
     systemctl daemon-reload
     log_success "sing-box 已成功卸载。"
 }
-display_node_info() {
+display_node_info() { # ... same as before
     [ ! -f "${SINGBOX_CONFIG_FILE}" ] && log_error "配置文件不存在或 sing-box 未安装。" && return
     CFG_PORT=$(jq -r '.inbounds[0].listen_port' "${SINGBOX_CONFIG_FILE}")
     UUID=$(jq -r '.inbounds[0].users[0].uuid' "${SINGBOX_CONFIG_FILE}")
@@ -260,23 +279,26 @@ display_node_info() {
     echo -e "================ VLESS 导入链接 ================" ; echo -e "${GREEN}${VLESS_LINK}${NC}"
     echo -e "===================== 二维码 =====================" ; qrencode -t ANSIUTF8 "${VLESS_LINK}"
 }
+
 main_menu() {
     clear
     echo "===================================================="
-    echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.5.1)"
+    echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.6.0)"
     echo "===================================================="
-    echo "  1. 安装 Sing-Box    2. 卸载 Sing-Box"
+    echo "  1. 安装 Sing-Box         2. 卸载 Sing-Box"
+    echo "  3. 更新 Sing-Box         4. 重启 Sing-Box"
+    echo "  5. 查看节点信息        6. 检查 BBR+FQ 状态"
     echo "  --------------------------------------------------"
-    echo "  3. 更新 Sing-Box    4. 重启 Sing-Box"
-    echo "  5. 查看节点信息   0. 退出脚本"
+    echo "  0. 退出脚本"
     echo "===================================================="
-    read -r -p "请输入选项 [0-5]: " choice
+    read -r -p "请输入选项 [0-6]: " choice
     case ${choice} in
         1) install_sing-box ;;
         2) uninstall_sing-box ;;
         3) log_warning "更新功能正在开发中..." ;;
         4) systemctl restart sing-box && log_success "Sing-box 已重启。" || log_error "操作失败或服务未安装。" ;;
         5) display_node_info ;;
+        6) check_bbr_status ;;
         0) exit 0 ;;
         *) log_error "无效选项。" ;;
     esac
