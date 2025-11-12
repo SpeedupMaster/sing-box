@@ -21,7 +21,7 @@ SINGBOX_SERVICE_FILE="/etc/systemd/system/sing-box.service"
 SCRIPT_PATH="/usr/local/bin/singbox-manager"
 SHORTCUT_NAME="singbox"
 LISTEN_PORT=443
-SCRIPT_URL="bash <(curl -fsSL https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh)"
+SCRIPT_URL="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh"
 SELECTED_SNI=""
 
 # A comprehensive list of high-availability domains for random SNI
