@@ -1,638 +1,421 @@
 #!/usr/bin/env bash
-# 一键安装/更新/卸载 sing-box（VLESS + REALITY）+ 安装/启用 BBR+fq
-# 安装后快捷命令：singbox
-# Tested on: Debian 11/12, Ubuntu 20.04/22.04/24.04, CentOS/Alma/Rocky 8/9
-# Architecture: amd64, arm64
 
-set -euo pipefail
-umask 022
+#====================================================
+# Script to install Sing-Box VLESS Reality on VPS
+# Author: Your Name
+# Version: 1.2.0
+#====================================================
 
-#-----------------------------
-# Constants
-#-----------------------------
-BIN_PATH="/usr/local/bin/sing-box"
-CFG_DIR="/etc/sing-box"
-CFG_PATH="${CFG_DIR}/config.json"
-META_PATH="${CFG_DIR}/reality.meta.json"
-SVC_PATH="/etc/systemd/system/sing-box.service"
-SYSCTL_FILE="/etc/sysctl.d/99-bbr-fq.conf"
-SELF_PATH="/usr/local/bin/singboxctl"
-LINK_PATH="/usr/local/bin/singbox"
+#--- Colors ---#
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
 
-#-----------------------------
-# Helpers
-#-----------------------------
-is_root() { [ "${EUID:-$(id -u)}" -eq 0 ]; }
-err() { echo -e "\033[31m[ERROR]\033[0m $*" >&2; exit 1; }
-info() { echo -e "\033[32m[INFO]\033[0m $*"; }
-warn() { echo -e "\033[33m[WARN]\033[0m $*"; }
+#--- Global Variables ---#
+SINGBOX_CONFIG_PATH="/etc/sing-box"
+SINGBOX_CONFIG_FILE="${SINGBOX_CONFIG_PATH}/config.json"
+SINGBOX_BINARY_PATH="/usr/local/bin/sing-box"
+SINGBOX_SERVICE_FILE="/etc/systemd/system/sing-box.service"
+SCRIPT_PATH="/usr/local/bin/singbox-manager" # Path to save this script
+SHORTCUT_NAME="singbox"
 
-detect_os() {
-  if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS_ID=${ID:-}
-    OS_VERSION_ID=${VERSION_ID:-}
-    OS_CODENAME=${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}
-  else
-    err "无法检测操作系统，缺少 /etc/os-release"
-  fi
+#--- Helper Functions ---#
+log_info() {
+    echo -e "${CYAN}[INFO] ${1}${NC}"
 }
 
-detect_arch() {
-  local m; m=$(uname -m)
-  case "$m" in
-    x86_64|amd64) ARCH="amd64" ;;
-    aarch64|arm64) ARCH="arm64" ;;
-    *) err "不支持的架构: $m （仅支持 amd64/arm64）" ;;
-  esac
+log_success() {
+    echo -e "${GREEN}[SUCCESS] ${1}${NC}"
 }
 
-install_deps() {
-  info "安装必要依赖 (curl, tar, jq, openssl, ca-certificates, systemd, iproute/ss)..."
-  case "${OS_ID}" in
-    debian|ubuntu)
-      apt-get update -y
-      DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar jq openssl ca-certificates systemd iproute2
-      ;;
-    centos|almalinux|rocky)
-      yum install -y curl tar jq openssl ca-certificates systemd iproute || dnf install -y curl tar jq openssl ca-certificates systemd iproute
-      ;;
-    *)
-      warn "未知系统 ${OS_ID}，尝试使用通用方案安装依赖"
-      apt-get update -y || true
-      apt-get install -y curl tar jq openssl ca-certificates systemd iproute2 || true
-      ;;
-  esac
+log_warning() {
+    echo -e "${YELLOW}[WARNING] ${1}${NC}"
 }
 
-ask_with_default() {
-  local prompt default var
-  prompt="$1"; default="$2"
-  read -rp "$prompt [$default]: " var || true
-  echo "${var:-$default}"
+log_error() {
+    echo -e "${RED}[ERROR] ${1}${NC}"
+    exit 1
 }
 
-yes_or_no() {
-  local prompt default ans
-  prompt="$1"; default="${2:-Y}"
-  read -rp "$prompt [$default]: " ans || true
-  ans="${ans:-$default}"
-  [[ "$ans" =~ ^[Yy]$ ]]
+#--- Prerequisite Checks ---#
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        log_error "此脚本必须以 root 用户权限运行。"
+    fi
 }
 
-get_public_ip() {
-  (curl -fsSL https://api.ipify.org || curl -fsSL https://ipinfo.io/ip || curl -fsSL https://ifconfig.me) 2>/dev/null || true
+check_os() {
+    source /etc/os-release
+    if [[ ! "$ID" =~ ^(debian|ubuntu|centos|fedora|rocky|almalinux)$ ]]; then
+        log_error "此脚本仅支持 Debian, Ubuntu, CentOS, Fedora, Rocky, AlmaLinux 系统。"
+    fi
 }
 
-port_busy() {
-  local port="$1"
-  ss -tuln 2>/dev/null | awk '{print $5}' | grep -E "[:.]${port}\$" >/dev/null 2>&1
+check_port() {
+    local port=$1
+    if lsof -i:"${port}" &>/dev/null; then
+        log_error "端口 ${port} 已被占用。请先停止占用该端口的程序再运行此脚本。"
+    fi
 }
 
-strip_ansi() {
-  # 去除 ANSI 颜色码
-  sed -E 's/\x1B\[[0-9;]*[mK]//g'
+#--- Dependency Installation ---#
+install_dependencies() {
+    log_info "正在安装必要的依赖包 (curl, jq, qrencode)..."
+    if command -v apt-get &>/dev/null; then
+        apt-get update -y && apt-get install -y curl jq qrencode lsof
+    elif command -v dnf &>/dev/null; then
+        dnf install -y curl jq qrencode lsof
+    elif command -v yum &>/dev/null; then
+        yum install -y curl jq qrencode lsof
+    else
+        log_error "无法找到包管理器 (apt/dnf/yum)。请手动安装 curl, jq, qrencode, lsof。"
+    fi
 }
 
-download_latest_singbox() {
-  local tmpdir api_json url name bindir
-  tmpdir=$(mktemp -d)
-  info "获取 sing-box 最新版本..."
-  api_json=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest) || err "无法访问 GitHub API（可能网络受限或限速）"
-  url=$(echo "$api_json" | jq -r --arg arch "linux-${ARCH}" '.assets[] | select((.name | contains($arch)) and (.name | endswith(".tar.gz"))) | .browser_download_url' | head -n1)
-  name=$(echo "$api_json" | jq -r '.name // .tag_name // "latest"')
-  [ -n "$url" ] || err "未能找到 sing-box 的下载地址（assets 匹配失败）"
-  info "下载：$name / $url"
-  curl -fsSL "$url" -o "$tmpdir/singbox.tar.gz" || err "下载失败"
-  tar -xzf "$tmpdir/singbox.tar.gz" -C "$tmpdir"
-  bindir=$(find "$tmpdir" -type f -name "sing-box" -printf "%h\n" | head -n1)
-  [ -n "$bindir" ] || err "未找到 sing-box 可执行文件"
-  install -m 0755 "$bindir/sing-box" "$BIN_PATH"
-  info "sing-box 已安装到 $BIN_PATH"
+#--- BBR Installation ---#
+install_bbr() {
+    log_info "正在检查并安装最新版 BBR..."
+    if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        log_success "BBR 已经启用。"
+    else
+        log_info "正在启用 BBR + fq..."
+        echo "net.core.default_qdisc=fq" | sudo tee -a /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" | sudo tee -a /etc/sysctl.conf
+        sysctl -p
+        if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+            log_success "BBR + fq 已成功启用！"
+        else
+            log_warning "BBR 启用失败。可能需要重启系统或内核不支持。"
+        fi
+    fi
 }
 
-generate_reality_keys() {
-  # 优先 JSON 输出；兼容文本输出；去除颜色码并稳健解析
-  local out
-  if out=$("$BIN_PATH" generate reality-keypair --json 2>/dev/null); then
-    :
-  elif out=$("$BIN_PATH" generate reality-keypair 2>/dev/null); then
-    :
-  elif out=$("$BIN_PATH" generate reality-key 2>/dev/null); then
-    :
-  else
-    err "无法生成 Reality 密钥（命令执行失败）"
-  fi
+#--- Core Functions ---#
+install_sing-box() {
+    log_info "开始安装 sing-box..."
+    check_port 443
+    install_dependencies
 
-  out=$(echo "$out" | strip_ansi)
+    # Get system architecture
+    ARCH=$(uname -m)
+    case ${ARCH} in
+    x86_64)
+        ARCH="amd64"
+        ;;
+    aarch64)
+        ARCH="arm64"
+        ;;
+    esac
+    LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r ".tag_name" | sed 's/v//')
+    if [ -z "$LATEST_VERSION" ]; then
+        log_error "无法从 GitHub API 获取最新的 sing-box 版本号。"
+    fi
+    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
 
-  if echo "$out" | jq -e 'has("private_key") and has("public_key")' >/dev/null 2>&1; then
-    SB_PRIV_KEY=$(echo "$out" | jq -r '.private_key')
-    SB_PUB_KEY=$(echo "$out" | jq -r '.public_key')
-  else
-    SB_PRIV_KEY=$(echo "$out" | sed -n 's/.*[Pp]rivate[ _-]*[Kk]ey[:：] *//p' | head -n1 | tr -d '", ')
-    SB_PUB_KEY=$(echo "$out" | sed -n 's/.*[Pp]ublic[ _-]*[Kk]ey[:：] *//p' | head -n1 | tr -d '", ')
-  fi
+    log_info "正在下载 sing-box v${LATEST_VERSION} for ${ARCH}..."
+    curl -fsSL -o /tmp/sing-box.tar.gz "${DOWNLOAD_URL}"
+    
+    # Extract and install
+    tar -xzf /tmp/sing-box.tar.gz -C /tmp
+    mv "/tmp/sing-box-${LATEST_VERSION}-linux-${ARCH}/sing-box" "${SINGBOX_BINARY_PATH}"
+    chmod +x "${SINGBOX_BINARY_PATH}"
 
-  if ! [[ "${SB_PRIV_KEY:-}" =~ ^[-_A-Za-z0-9=]+$ ]]; then
-    err "生成 Reality 私钥解析失败：$SB_PRIV_KEY"
-  fi
-  if ! [[ "${SB_PUB_KEY:-}" =~ ^[-_A-Za-z0-9=]+$ ]]; then
-    err "生成 Reality 公钥解析失败：$SB_PUB_KEY"
-  fi
+    # Generate config
+    generate_config
+
+    # Create systemd service
+    create_service
+
+    # Install BBR
+    install_bbr
+
+    # Save script for management
+    save_script
+
+    systemctl daemon-reload
+    systemctl enable sing-box
+    systemctl start sing-box
+
+    if systemctl is-active --quiet sing-box; then
+        log_success "sing-box 安装并启动成功！"
+        display_node_info
+    else
+        log_error "sing-box 启动失败，请检查日志：journalctl -u sing-box --no-pager -l"
+    fi
+
+    # Cleanup
+    rm -rf /tmp/sing-box*
 }
 
-generate_values() {
-  # UUID
-  if command -v uuidgen >/dev/null 2>&1; then
-    SB_UUID=$(uuidgen)
-  else
-    SB_UUID=$(cat /proc/sys/kernel/random/uuid)
-  fi
-  # Reality keypair
-  generate_reality_keys
-  # short_id（8~16 hex，取 16）
-  SB_SHORT_ID=$(openssl rand -hex 8)
+generate_config() {
+    log_info "正在生成配置文件..."
+    mkdir -p "${SINGBOX_CONFIG_PATH}"
+    
+    local UUID=$(sing-box generate uuid)
+    local KEY_PAIR=$(sing-box generate reality-keypair)
+    local PRIVATE_KEY=$(echo "${KEY_PAIR}" | awk '/PrivateKey/ {print $2}')
+    local PUBLIC_KEY=$(echo "${KEY_PAIR}" | awk '/PublicKey/ {print $2}')
+    local SHORT_ID=$(openssl rand -hex 8)
+    local IP_ADDR=$(curl -s4 ip.sb)
 
-  info "生成参数完成："
-  echo "  UUID:         $SB_UUID"
-  echo "  Public Key:   $SB_PUB_KEY"
-  echo "  Private Key:  $SB_PRIV_KEY"
-  echo "  Short ID:     $SB_SHORT_ID"
-}
-
-write_config() {
-  mkdir -p "$CFG_DIR"
-  cat > "$CFG_PATH" <<EOF
+    cat > "${SINGBOX_CONFIG_FILE}" <<EOF
 {
-  "log": { "level": "info" },
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
   "inbounds": [
     {
       "type": "vless",
-      "tag": "vless-reality-in",
+      "tag": "vless-in",
       "listen": "::",
-      "listen_port": ${SB_LISTEN_PORT},
+      "listen_port": 443,
+      "sniff": true,
+      "sniff_override_destination": true,
       "users": [
-        { "uuid": "${SB_UUID}", "flow": "xtls-rprx-vision" }
+        {
+          "uuid": "${UUID}",
+          "flow": "xtls-rprx-vision"
+        }
       ],
       "tls": {
         "enabled": true,
-        "server_name": "${SB_SNI_DOMAIN}",
+        "server_name": "www.bing.com",
         "reality": {
           "enabled": true,
-          "handshake": { "server": "${SB_SNI_DOMAIN}", "server_port": ${SB_HANDSHAKE_PORT} },
-          "private_key": "${SB_PRIV_KEY}",
-          "short_id": ["${SB_SHORT_ID}"]
+          "handshake": {
+            "server": "www.bing.com",
+            "server_port": 443
+          },
+          "private_key": "${PRIVATE_KEY}",
+          "short_id": ["${SHORT_ID}"]
         }
       }
     }
   ],
   "outbounds": [
-    { "type": "direct", "tag": "direct" },
-    { "type": "block", "tag": "block" }
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    }
   ]
 }
 EOF
-  info "配置文件已写入：$CFG_PATH"
-  "$BIN_PATH" check -c "$CFG_PATH" || err "配置校验失败，请检查配置项"
 }
 
-persist_meta() {
-  cat > "$META_PATH" <<EOF
-{
-  "uuid": "${SB_UUID}",
-  "priv_key": "${SB_PRIV_KEY}",
-  "pub_key": "${SB_PUB_KEY}",
-  "short_id": "${SB_SHORT_ID}",
-  "listen_port": ${SB_LISTEN_PORT},
-  "sni_domain": "${SB_SNI_DOMAIN}",
-  "handshake_port": ${SB_HANDSHAKE_PORT},
-  "client_server_addr": "${CLIENT_SERVER_ADDR}",
-  "updated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-}
-EOF
-  info "参数已保存：$META_PATH"
-}
-
-setup_systemd() {
-  cat > "$SVC_PATH" <<'EOF'
+create_service() {
+    log_info "正在创建 systemd 服务..."
+    cat > "${SINGBOX_SERVICE_FILE}" <<EOF
 [Unit]
-Description=sing-box service (VLESS REALITY)
-After=network.target
+Description=sing-box service
+Documentation=https://sing-box.sagernet.org/
+After=network.target nss-lookup.target
 
 [Service]
-Type=simple
 User=root
-Group=root
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+WorkingDirectory=${SINGBOX_CONFIG_PATH}
+ExecStart=${SINGBOX_BINARY_PATH} run
 Restart=on-failure
-RestartSec=5s
-LimitNOFILE=1048576
+RestartSec=10
+LimitNPROC=infinity
+LimitNOFILE=infinity
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reload
-  systemctl enable --now sing-box
-  systemctl status sing-box --no-pager -l || true
-  info "systemd 服务已启动：sing-box"
 }
 
-open_firewall_port() {
-  local port="$1"
-  if command -v ufw >/dev/null 2>&1; then
-    warn "检测到 ufw，开放端口 $port"
-    ufw allow "$port"/tcp || true
-    ufw allow "$port"/udp || true
-  elif command -v firewall-cmd >/dev/null 2>&1; then
-    warn "检测到 firewalld，开放端口 $port"
-    firewall-cmd --add-port="${port}/tcp" --permanent || true
-    firewall-cmd --add-port="${port}/udp" --permanent || true
-    firewall-cmd --reload || true
-  else
-    warn "未检测到常见防火墙（ufw/firewalld），如有其它防火墙请手动放行端口 $port"
-  fi
-}
-
-close_firewall_port() {
-  local port="$1"
-  if command -v ufw >/dev/null 2>&1; then
-    warn "尝试回收 ufw 端口 $port"
-    ufw delete allow "$port"/tcp || true
-    ufw delete allow "$port"/udp || true
-  elif command -v firewall-cmd >/dev/null 2>&1; then
-    warn "尝试回收 firewalld 端口 $port"
-    firewall-cmd --remove-port="${port}/tcp" --permanent || true
-    firewall-cmd --remove-port="${port}/udp" --permanent || true
-    firewall-cmd --reload || true
-  fi
-}
-
-gen_vless_link() {
-  local name="${1:-VLESS-REALITY}"
-  local pbk sid sni uuid addr port
-  pbk=$(jq -r '.pub_key' "$META_PATH")
-  sid=$(jq -r '.short_id' "$META_PATH")
-  sni=$(jq -r '.sni_domain' "$META_PATH")
-  uuid=$(jq -r '.uuid' "$META_PATH")
-  addr=$(jq -r '.client_server_addr' "$META_PATH")
-  port=$(jq -r '.listen_port' "$META_PATH")
-  echo "vless://${uuid}@${addr}:${port}?encryption=none&security=reality&type=tcp&flow=xtls-rprx-vision&pbk=${pbk}&sid=${sid}&sni=${sni}&fp=chrome#${name}"
-}
-
-print_client_guide() {
-  local meta_addr meta_port meta_uuid meta_pub meta_sid meta_sni
-  meta_addr=$(jq -r '.client_server_addr' "$META_PATH")
-  meta_port=$(jq -r '.listen_port' "$META_PATH")
-  meta_uuid=$(jq -r '.uuid' "$META_PATH")
-  meta_pub=$(jq -r '.pub_key' "$META_PATH")
-  meta_sid=$(jq -r '.short_id' "$META_PATH")
-  meta_sni=$(jq -r '.sni_domain' "$META_PATH")
-
-  cat <<EOF
-
-============================================================
-VLESS REALITY 节点信息（用于客户端）：
-------------------------------------------------------------
-地址（server）：    ${meta_addr}
-端口（port）：       ${meta_port}
-UUID（id）：         ${meta_uuid}
-传输（transport）：  TCP
-加密（security）：   reality（TLS 伪装）
-flow：               xtls-rprx-vision
-SNI（server_name）： ${meta_sni}
-Reality public_key： ${meta_pub}
-Reality short_id：   ${meta_sid}
-
-vless 导入链接（可直接复制到 v2rayN/v2rayNG 等）：
-$(gen_vless_link "VLESS-REALITY")
-
-示例（sing-box 客户端 outbound 配置片段）：
-{
-  "type": "vless",
-  "server": "${meta_addr}",
-  "server_port": ${meta_port},
-  "uuid": "${meta_uuid}",
-  "flow": "xtls-rprx-vision",
-  "tls": {
-    "enabled": true,
-    "server_name": "${meta_sni}",
-    "reality": {
-      "enabled": true,
-      "public_key": "${meta_pub}",
-      "short_id": "${meta_sid}"
-    }
-  }
-}
-
-提示：
-- 握手域名应为可正常提供 TLS 的真实站点（如：www.cloudflare.com / www.bing.com / www.wikipedia.org）
-- 如果服务器已有 Nginx 占用 443，建议使用 8443 或参考“与 Nginx 共享 443（进阶）”
-- 查看日志：journalctl -u sing-box -f
-============================================================
-EOF
-}
-
-#-----------------------------
-# BBR + fq
-#-----------------------------
-kernel_info() {
-  uname -r
-}
-
-has_bbr() {
-  sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr
-}
-
-enable_bbr_fq() {
-  info "启用 BBR+fq..."
-  modprobe tcp_bbr 2>/dev/null || true
-  cat > "$SYSCTL_FILE" <<'EOF'
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-EOF
-  sysctl --system >/dev/null 2>&1 || sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || true
-
-  local cc qdisc
-  cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
-  qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "")
-  if [[ "$cc" == "bbr" && "$qdisc" == "fq" ]]; then
-    info "BBR+fq 已启用（当前内核：$(kernel_info)）"
-  else
-    warn "BBR+fq 启用状态未确认（cc=$cc, qdisc=$qdisc）。如仍不生效，可能需要重启或升级内核。"
-  fi
-}
-
-upgrade_kernel_for_bbr() {
-  detect_os
-  info "尝试安装较新内核以支持 BBR（将不会自动重启）..."
-  case "${OS_ID}" in
-    ubuntu)
-      apt-get update -y
-      DEBIAN_FRONTEND=noninteractive apt-get install -y linux-generic
-      info "Ubuntu 已安装 linux-generic 内核，重启后再执行菜单 6 启用 BBR+fq。"
-      ;;
-    debian)
-      apt-get update -y
-      if ! DEBIAN_FRONTEND=noninteractive apt-get install -y linux-image-amd64; then
-        if [ -n "${OS_CODENAME:-}" ]; then
-          echo "deb http://deb.debian.org/debian ${OS_CODENAME}-backports main" > /etc/apt/sources.list.d/backports.list
-          apt-get update -y
-          DEBIAN_FRONTEND=noninteractive apt-get -t "${OS_CODENAME}-backports" install -y linux-image-amd64
-          info "Debian 已安装 backports 内核，重启后再执行菜单 6 启用 BBR+fq。"
-        else
-          warn "无法识别 Debian codename，内核升级未完成。"
-        fi
-      else
-        info "Debian 已安装最新 linux-image-amd64，重启后再执行菜单 6 启用 BBR+fq。"
-      fi
-      ;;
-    centos|almalinux|rocky)
-      local major
-      major=$(echo "$OS_VERSION_ID" | awk -F'.' '{print $1}')
-      if [[ "$major" == "9" ]]; then
-        yum install -y https://www.elrepo.org/elrepo-release-9.el9.elrepo.noarch.rpm || dnf install -y https://www.elrepo.org/elrepo-release-9.el9.elrepo.noarch.rpm
-      else
-        yum install -y https://www.elrepo.org/elrepo-release-8.el8.elrepo.noarch.rpm || dnf install -y https://www.elrepo.org/elrepo-release-8.el8.elrepo.noarch.rpm
-      fi
-      yum --enablerepo=elrepo-kernel install -y kernel-ml || dnf --enablerepo=elrepo-kernel install -y kernel-ml
-      info "EL 系列已安装 kernel-ml（主线内核）。重启后再执行菜单 6 启用 BBR+fq。"
-      ;;
-    *)
-      warn "暂不支持自动升级该系统的内核，请手动升级到 >= 4.9 的内核以支持 BBR。"
-      ;;
-  esac
-  warn "注意：更换内核需重启生效。请执行 reboot 后再次运行本脚本启用 BBR+fq。"
-}
-
-do_enable_bbr() {
-  detect_os
-  if has_bbr; then
-    enable_bbr_fq
-  else
-    warn "当前内核可能不支持 BBR（$(kernel_info)），或未启用 TCP BBR 模块。"
-    if yes_or_no "是否自动尝试升级到较新内核以支持 BBR？（需要重启）" "N"; then
-      upgrade_kernel_for_bbr
-    else
-      warn "已取消内核升级。你可手动升级内核后再执行菜单 6 启用 BBR+fq。"
+uninstall_sing-box() {
+    log_warning "确定要卸载 sing-box 吗? [y/N]"
+    read -r -p "请输入: " confirm
+    if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+        log_info "卸载操作已取消。"
+        return
     fi
-  fi
+
+    log_info "正在停止并禁用 sing-box 服务..."
+    systemctl stop sing-box
+    systemctl disable sing-box
+    
+    log_info "正在删除文件..."
+    rm -f "${SINGBOX_SERVICE_FILE}"
+    rm -rf "${SINGBOX_CONFIG_PATH}"
+    rm -f "${SINGBOX_BINARY_PATH}"
+    rm -f "${SCRIPT_PATH}"
+    
+    # Remove alias
+    if grep -q "alias ${SHORTCUT_NAME}=" ~/.bashrc; then
+        sed -i "/alias ${SHORTCUT_NAME}=/d" ~/.bashrc
+        log_info "已从 ~/.bashrc 中移除快捷命令。"
+    fi
+
+    systemctl daemon-reload
+    log_success "sing-box 已成功卸载。"
 }
 
+update_sing-box() {
+    log_info "正在检查更新..."
+    CURRENT_VERSION=$(${SINGBOX_BINARY_PATH} version | awk 'NR==1{print $3}')
+    LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r ".tag_name" | sed 's/v//')
 
-# 可选：设置你的脚本发布地址，供自安装回源使用
-SCRIPT_URL="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh"   # 例如：SCRIPT_URL="https://your-domain/path/setup-vless-reality.sh"
-#-----------------------------
+    if [ "$CURRENT_VERSION" == "$LATEST_VERSION" ]; then
+        log_success "您已安装最新版本: v${CURRENT_VERSION}"
+        return
+    fi
 
-# Self-install (首次运行自动安装为 singbox/singboxctl)
-#-----------------------------
-self_install() {
-  local src="${BASH_SOURCE[0]:-}"
-  if [ -z "$src" ]; then
-    warn "无法确定脚本来源路径，跳过自安装。你可手动保存为 $SELF_PATH 并链接到 $LINK_PATH"
-    return 0
-  fi
-  if [ "$src" != "$SELF_PATH" ]; then
-    mkdir -p /usr/local/bin
-    cat "$src" > "$SELF_PATH"
-    chmod +x "$SELF_PATH"
-    ln -sf "$SELF_PATH" "$LINK_PATH"
-    info "已安装快捷命令：singbox（路径：$LINK_PATH）"
-  fi
+    log_info "发现新版本 v${LATEST_VERSION}，正在更新..."
+    ARCH=$(uname -m)
+    case ${ARCH} in
+    x86_64)
+        ARCH="amd64"
+        ;;
+    aarch64)
+        ARCH="arm64"
+        ;;
+    esac
+    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
+
+    curl -fsSL -o /tmp/sing-box.tar.gz "${DOWNLOAD_URL}"
+    tar -xzf /tmp/sing-box.tar.gz -C /tmp
+    
+    systemctl stop sing-box
+    mv "/tmp/sing-box-${LATEST_VERSION}-linux-${ARCH}/sing-box" "${SINGBOX_BINARY_PATH}"
+    chmod +x "${SINGBOX_BINARY_PATH}"
+    systemctl start sing-box
+    
+    if systemctl is-active --quiet sing-box; then
+        log_success "sing-box 已成功更新至 v${LATEST_VERSION}！"
+    else
+        log_error "更新后启动失败，请检查日志。"
+    fi
+
+    rm -rf /tmp/sing-box*
 }
 
-#-----------------------------
-# Install / Setup
-#-----------------------------
-do_install() {
-  detect_os
-  detect_arch
-  install_deps
+save_script() {
+    log_info "正在保存管理脚本以便后续使用..."
+    # Copy self to a permanent location
+    cp -f "$0" "${SCRIPT_PATH}"
+    chmod +x "${SCRIPT_PATH}"
 
-  download_latest_singbox
-
-  # 默认端口逻辑：若 443 被占用则默认用 8443
-  local default_port default_sni default_handshake_port default_server_addr
-  if port_busy 443; then
-    warn "检测到 443 端口已被占用（可能是 Nginx），默认监听端口改为 8443"
-    default_port="8443"
-  else
-    default_port="443"
-  fi
-  default_sni="www.cloudflare.com"
-  default_handshake_port="443"
-  default_server_addr="$(get_public_ip)"
-  [ -n "$default_server_addr" ] || default_server_addr="你的服务器域名或IP"
-
-  SB_LISTEN_PORT=$(ask_with_default "请输入监听端口" "$default_port")
-  SB_SNI_DOMAIN=$(ask_with_default "请输入握手域名（SNI）" "$default_sni")
-  SB_HANDSHAKE_PORT=$(ask_with_default "请输入握手端口（一般为 443）" "$default_handshake_port")
-  CLIENT_SERVER_ADDR=$(ask_with_default "客户端中填写的服务器地址（域名或IP）" "$default_server_addr")
-
-  generate_values
-  write_config
-  persist_meta
-  setup_systemd
-  open_firewall_port "$SB_LISTEN_PORT"
-
-  print_client_guide
-  info "安装完成！如需查看日志：journalctl -u sing-box -f"
-
-  # 询问是否启用 BBR+fq
-  if yes_or_no "是否立刻安装/启用 BBR+fq 加速？" "Y"; then
-    do_enable_bbr
-  else
-    warn "已跳过 BBR+fq 加速，你可在菜单中选择“安装/启用 BBR+fq”后续开启。"
-  fi
+    # Add alias to .bashrc if not already present
+    if ! grep -q "alias ${SHORTCUT_NAME}=" ~/.bashrc; then
+        echo "alias ${SHORTCUT_NAME}='${SCRIPT_PATH}'" >> ~/.bashrc
+        log_success "已创建快捷命令 '${SHORTCUT_NAME}'。"
+        log_info "请运行 'source ~/.bashrc' 或重新登录SSH以使命令生效。"
+    fi
 }
 
-#-----------------------------
-# Update
-#-----------------------------
-do_update() {
-  [ -x "$BIN_PATH" ] || err "未检测到 sing-box 已安装，请先安装"
-  detect_os
-  detect_arch
-  install_deps
-  download_latest_singbox
-  systemctl restart sing-box || true
-  info "已更新并重启 sing-box"
-  if [ -f "$META_PATH" ]; then
-    print_client_guide
-  else
-    warn "未找到元数据文件，无法输出节点信息。若需重建信息，请重新执行安装或手动更新 $META_PATH"
-  fi
+display_node_info() {
+    if [ ! -f "${SINGBOX_CONFIG_FILE}" ]; then
+        log_error "配置文件不存在，无法显示节点信息。"
+        return
+    fi
+    
+    UUID=$(jq -r '.inbounds[0].users[0].uuid' "${SINGBOX_CONFIG_FILE}")
+    PRIVATE_KEY=$(jq -r '.inbounds[0].tls.reality.private_key' "${SINGBOX_CONFIG_FILE}")
+    PUBLIC_KEY=$(sing-box generate reality-keypair --private-key "${PRIVATE_KEY}" | awk '/PublicKey/ {print $2}')
+    SHORT_ID=$(jq -r '.inbounds[0].tls.reality.short_id[0]' "${SINGBOX_CONFIG_FILE}")
+    IP_ADDR=$(curl -s4 ip.sb)
+    SERVER_NAME=$(jq -r '.inbounds[0].tls.server_name' "${SINGBOX_CONFIG_FILE}")
+    
+    NODE_NAME="vless-reality-$(date +%s)"
+    
+    # vless://<uuid>@<host>:<port>?encryption=none&flow=xtls-rprx-vision&security=reality&sni=<sni>&fp=chrome&pbk=<pbk>&sid=<sid>&type=tcp&headerType=none#<name>
+    VLESS_LINK="vless://${UUID}@${IP_ADDR}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SERVER_NAME}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
+
+    echo -e "=================================================="
+    log_success "节点配置信息:"
+    echo -e "  ${YELLOW}地址 (Address):${NC} ${IP_ADDR}"
+    echo -e "  ${YELLOW}端口 (Port):${NC} 443"
+    echo -e "  ${YELLOW}UUID:${NC} ${UUID}"
+    echo -e "  ${YELLOW}流控 (Flow):${NC} xtls-rprx-vision"
+    echo -e "  ${YELLOW}加密 (Encryption):${NC} none"
+    echo -e "  ${YELLOW}传输安全 (Security):${NC} reality"
+    echo -e "  ${YELLOW}SNI:${NC} ${SERVER_NAME}"
+    echo -e "  ${YELLOW}公钥 (Public Key):${NC} ${PUBLIC_KEY}"
+    echo -e "  ${YELLOW}Short ID:${NC} ${SHORT_ID}"
+    echo -e "  ${YELLOW}指纹 (Fingerprint):${NC} chrome"
+    echo -e "=================================================="
+    log_success "VLESS 导入链接:"
+    echo -e "${GREEN}${VLESS_LINK}${NC}"
+    echo -e "=================================================="
+    log_success "二维码 (请使用客户端扫描):"
+    qrencode -t ANSIUTF8 "${VLESS_LINK}"
+    echo -e "=================================================="
 }
 
-#-----------------------------
-# Uninstall
-#-----------------------------
-do_uninstall() {
-  local listen_port
-  if [ -f "$META_PATH" ]; then
-    listen_port=$(jq -r '.listen_port' "$META_PATH" 2>/dev/null || echo "")
-  fi
-
-  systemctl stop sing-box 2>/dev/null || true
-  systemctl disable sing-box 2>/dev/null || true
-  rm -f "$SVC_PATH"
-  systemctl daemon-reload
-
-  if [ -n "${listen_port:-}" ]; then
-    close_firewall_port "$listen_port"
-  fi
-
-  echo
-  warn "是否删除二进制和配置文件？此操作不可恢复。"
-  echo "1) 删除全部（包含二进制 / 配置 / 元数据）"
-  echo "2) 仅删除服务（保留二进制与配置）"
-  read -rp "请选择 [1/2]: " choice || true
-  case "${choice:-2}" in
+#--- Main Menu ---#
+main_menu() {
+    clear
+    echo "===================================================="
+    echo -e "  ${CYAN}Sing-Box VLESS Reality 一键管理脚本${NC}"
+    echo "===================================================="
+    echo -e "  ${GREEN}1. 安装 Sing-Box${NC}"
+    echo -e "  ${GREEN}2. 卸载 Sing-Box${NC}"
+    echo "----------------------------------------------------"
+    echo -e "  ${YELLOW}3. 更新 Sing-Box${NC}"
+    echo -e "  ${YELLOW}4. 重启 Sing-Box${NC}"
+    echo -e "  ${YELLOW}5. 查看节点信息${NC}"
+    echo "----------------------------------------------------"
+    echo -e "  ${RED}0. 退出脚本${NC}"
+    echo "===================================================="
+    
+    read -r -p "请输入选项 [0-5]: " choice
+    case ${choice} in
     1)
-      rm -f "$BIN_PATH"
-      rm -rf "$CFG_DIR"
-      info "已删除二进制与配置文件"
-      ;;
+        install_sing-box
+        ;;
     2)
-      info "仅移除服务，保留二进制与配置"
-      ;;
+        uninstall_sing-box
+        ;;
+    3)
+        update_sing-box
+        ;;
+    4)
+        systemctl restart sing-box
+        log_success "Sing-box 已重启。"
+        ;;
+    5)
+        display_node_info
+        ;;
+    0)
+        exit 0
+        ;;
     *)
-      info "未选择有效项，默认保留二进制与配置"
-      ;;
-  esac
-  info "卸载完成"
+        log_error "无效的选项，请输入正确的数字。"
+        ;;
+    esac
 }
 
-#-----------------------------
-# Show Info
-#-----------------------------
-show_info() {
-  [ -f "$META_PATH" ] || err "未找到 ${META_PATH}，请先安装"
-  print_client_guide
-}
+#--- Script Entry Point ---#
+check_root
+check_os
 
-#-----------------------------
-# Restart
-#-----------------------------
-restart_service() {
-  systemctl restart sing-box
-  info "已重启 sing-box 服务"
-}
-
-#-----------------------------
-# Menu
-#-----------------------------
-show_menu() {
-  echo "========================================"
-  echo " sing-box (VLESS REALITY) 管理菜单"
-  echo "----------------------------------------"
-  echo " 1) 安装/初始化"
-  echo " 2) 更新 sing-box 到最新版本"
-  echo " 3) 重启服务"
-  echo " 4) 查看节点信息与导入链接"
-  echo " 5) 卸载"
-  echo " 6) 安装/启用 BBR+fq"
-  echo " 0) 退出"
-  echo "========================================"
-  read -rp "请选择操作 [0-6]: " ans || true
-  case "${ans:-0}" in
-    1) do_install ;;
-    2) do_update ;;
-    3) restart_service ;;
-    4) show_info ;;
-    5) do_uninstall ;;
-    6) do_enable_bbr ;;
-    0) exit 0 ;;
-    *) warn "无效选择";;
-  esac
-}
-
-#-----------------------------
-# Entry
-#-----------------------------
-main() {
-  is_root || err "请使用 root 权限运行此脚本（sudo 或直接 root）"
-  self_install
-  # 支持命令行参数：install/update/uninstall/info/restart/bbr/menu
-  case "${1:-menu}" in
-    install) shift; do_install ;;
-    update) shift; do_update ;;
-    uninstall) shift; do_uninstall ;;
-    info) shift; show_info ;;
-    restart) shift; restart_service ;;
-    bbr) shift; do_enable_bbr ;;
-    menu|*) show_menu ;;
-  esac
-}
-
-main "$@"
-
-#-----------------------------
-# 进阶：与 Nginx 共享 443（可选）
-#-----------------------------
-# 如果你必须与 Nginx 共享 443，可以使用 Nginx stream 基于 SNI 分流：
-# 注意：Reality 客户端的 SNI 是伪装域名（如 www.cloudflare.com），
-# 你可以将此类 SNI 的连接转发给 sing-box，其他你的真实域名继续给 Nginx/网站。
-#
-# /etc/nginx/nginx.conf 里添加（需启用 stream 模块）：
-#
-# stream {
-#   map $ssl_preread_server_name $route {
-#     ~^(www\\.cloudflare\\.com|www\\.bing\\.com|www\\.wikipedia\\.org)$ singbox;
-#     default web;
-#   }
-#   upstream singbox_backend { server 127.0.0.1:8443; } # sing-box 监听端口
-#   upstream web_backend    { server 127.0.0.1:443; }   # 你原有的服务（或变更端口）
-#
-#   server {
-#     listen 443 reuseport;
-#     proxy_pass $route;
-#     ssl_preread on;
-#   }
-# }
-#
-# 然后：nginx -t && systemctl reload nginx
-# 这样客户端仍用 443，且按 SNI 分流至 sing-box 或 Web。
+if [[ $# -gt 0 ]]; then
+    case $1 in
+        install)
+            install_sing-box
+            ;;
+        uninstall)
+            uninstall_sing-box
+            ;;
+        update)
+            update_sing-box
+            ;;
+        info)
+            display_node_info
+            ;;
+        *)
+            main_menu
+            ;;
+    esac
+else
+    main_menu
+fi
