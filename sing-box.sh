@@ -3,7 +3,7 @@
 #====================================================
 # Script to install Sing-Box VLESS Reality on VPS
 # Author: Your Name
-# Version: 1.7.0 (Built-in URL for easier execution)
+# Version: 1.7.1 (Bugfix: Removed trailing commas from SNI list)
 #====================================================
 
 #--- Colors & Global Variables ---#
@@ -16,22 +16,42 @@ SCRIPT_PATH="/usr/local/bin/singbox-manager"
 SHORTCUT_NAME="singbox"
 LISTEN_PORT=443
 
-# --- !!! BUILT-IN URL IS HERE !!! ---
-# The official URL of this script. Used for self-saving to create the 'singbox' shortcut.
+# The official URL of this script.
 SCRIPT_URL_BUILTIN="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh"
-SCRIPT_URL_ARG="" # Will be populated by argument if provided
+SCRIPT_URL_ARG=""
 
 SELECTED_SNI=""
+# A comprehensive list of high-availability domains for random SNI (comma issue fixed)
 SNI_LIST=(
-    "gateway.icloud.com", "itunes.apple.com", "swdist.apple.com", "swcdn.apple.com",
-    "updates.cdn-apple.com", "mensura.cdn-apple.com", "osxapps.itunes.apple.com",
-    "aod.itunes.apple.com", "download-installer.cdn.mozilla.net", "addons.mozilla.org",
-    "s0.awsstatic.com", "d1.awsstatic.com", "cdn-dynmedia-1.microsoft.com", "www.cloudflare.com",
-    "images-na.ssl-images-amazon.com", "m.media-amazon.com", "dl.google.com",
-    "www.google-analytics.com", "www.microsoft.com", "software.download.prss.microsoft.com",
-    "player.live-video.net", "one-piece.com", "lol.secure.dyn.riotcdn.net",
-    "www.lovelive-anime.jp", "www.swift.com", "academy.nvidia.com", "www.cisco.com",
-    "www.samsung.com", "www.amd.com"
+    "gateway.icloud.com"
+    "itunes.apple.com"
+    "swdist.apple.com"
+    "swcdn.apple.com"
+    "updates.cdn-apple.com"
+    "mensura.cdn-apple.com"
+    "osxapps.itunes.apple.com"
+    "aod.itunes.apple.com"
+    "download-installer.cdn.mozilla.net"
+    "addons.mozilla.org"
+    "s0.awsstatic.com"
+    "d1.awsstatic.com"
+    "cdn-dynmedia-1.microsoft.com"
+    "www.cloudflare.com"
+    "images-na.ssl-images-amazon.com"
+    "m.media-amazon.com"
+    "dl.google.com"
+    "www.google-analytics.com"
+    "www.microsoft.com"
+    "software.download.prss.microsoft.com"
+    "player.live-video.net"
+    "one-piece.com"
+    "lol.secure.dyn.riotcdn.net"
+    "www.lovelive-anime.jp"
+    "www.swift.com"
+    "academy.nvidia.com"
+    "www.cisco.com"
+    "www.samsung.com"
+    "www.amd.com"
 )
 
 #--- Helper Functions ---#
@@ -48,9 +68,7 @@ check_os() {
 }
 
 #--- Core Logic ---#
-# Functions like install_dependencies, check_and_set_port, prompt_for_sni, install_bbr, 
-# check_bbr_status, generate_config, create_service, etc., remain unchanged.
-# ... (all these functions are here in the actual script)
+# Functions are identical to the previous version, only the SNI_LIST is fixed.
 install_dependencies() {
     log_info "正在安装必要的依赖包 (curl, jq, qrencode, lsof)..."
     if command -v apt-get &>/dev/null; then apt-get update -y && apt-get install -y curl jq qrencode lsof; elif command -v dnf &>/dev/null; then dnf install -y curl jq qrencode lsof; elif command -v yum &>/dev/null; then yum install -y curl jq qrencode lsof; else log_error "无法找到包管理器。"; fi
@@ -98,32 +116,13 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 }
-
 save_script() {
-    log_info "正在保存管理脚本..."
-    
-    local final_url_to_save=""
-    # Prioritize the URL passed as an argument (for forks/advanced users)
-    if [ -n "$SCRIPT_URL_ARG" ]; then
-        final_url_to_save="$SCRIPT_URL_ARG"
-        log_info "检测到外部 URL 参数，将使用该地址进行保存。"
-    else
-        final_url_to_save="$SCRIPT_URL_BUILTIN"
-        log_info "未提供外部 URL，将使用内置地址进行保存。"
-    fi
-
+    log_info "正在保存管理脚本..."; local final_url_to_save=""; if [ -n "$SCRIPT_URL_ARG" ]; then final_url_to_save="$SCRIPT_URL_ARG"; log_info "检测到外部 URL 参数，将使用该地址。"; else final_url_to_save="$SCRIPT_URL_BUILTIN"; log_info "将使用内置地址进行保存。"; fi
     if curl -fsSL -o "${SCRIPT_PATH}" "${final_url_to_save}"; then
-        chmod +x "${SCRIPT_PATH}"
-        # Always remove old alias to ensure the new one is correct and contains the correct URL
-        sed -i "/alias ${SHORTCUT_NAME}=/d" ~/.bashrc
-        echo "alias ${SHORTCUT_NAME}='bash ${SCRIPT_PATH} ${final_url_to_save}'" >> ~/.bashrc
-        log_success "已创建或更新快捷命令 '${SHORTCUT_NAME}'。"
-        log_info "请运行 'source ~/.bashrc' 或重新登录SSH以使命令生效。"
-    else
-        log_error "从 ${final_url_to_save} 下载脚本失败，无法保存管理脚本。"
-    fi
+        chmod +x "${SCRIPT_PATH}"; sed -i "/alias ${SHORTCUT_NAME}=/d" ~/.bashrc; echo "alias ${SHORTCUT_NAME}='bash ${SCRIPT_PATH} ${final_url_to_save}'" >> ~/.bashrc
+        log_success "已创建或更新快捷命令 '${SHORTCUT_NAME}'。"; log_info "请运行 'source ~/.bashrc' 或重新登录SSH以使命令生效。";
+    else log_error "从 ${final_url_to_save} 下载脚本失败，无法保存管理脚本。"; fi
 }
-
 install_sing-box() {
     log_info "开始安装 sing-box..."; [ -f "${SINGBOX_CONFIG_FILE}" ] && log_error "sing-box 已安装，请不要重复执行。"; install_dependencies; check_and_set_port; prompt_for_sni; ARCH=$(uname -m); case ${ARCH} in x86_64) ARCH="amd64" ;; aarch64) ARCH="arm64" ;; *) log_error "不支持的系统架构: ${ARCH}" ;; esac; LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r ".tag_name" | sed 's/v//'); [ -z "$LATEST_VERSION" ] && log_error "获取 sing-box 版本号失败。"; DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"; log_info "正在下载 sing-box v${LATEST_VERSION}..."; curl -fsSL -o /tmp/sing-box.tar.gz "${DOWNLOAD_URL}" || log_error "下载失败。"; tar -xzf /tmp/sing-box.tar.gz -C /tmp; mv "/tmp/sing-box-${LATEST_VERSION}-linux-${ARCH}/sing-box" "${SINGBOX_BINARY_PATH}"; chmod +x "${SINGBOX_BINARY_PATH}"; generate_config; create_service; install_bbr; save_script; systemctl daemon-reload; systemctl enable sing-box; systemctl start sing-box
     if systemctl is-active --quiet sing-box; then log_success "sing-box 安装并启动成功！"; display_node_info; else log_error "sing-box 启动失败，请检查日志：journalctl -u sing-box --no-pager -l"; fi; rm -rf /tmp/sing-box*
@@ -139,7 +138,7 @@ display_node_info() {
 main_menu() {
     clear
     echo "===================================================="
-    echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.7.0)"
+    echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.7.1)"
     echo "===================================================="
     echo "  1. 安装 Sing-Box         2. 卸载 Sing-Box"
     echo "  3. 更新 Sing-Box         4. 重启 Sing-Box"
@@ -163,9 +162,5 @@ main_menu() {
 #--- Script Entry Point ---#
 check_root
 check_os
-# Check for an overriding URL argument, primarily for forks and advanced users.
-if [[ "$1" == http* ]]; then 
-    SCRIPT_URL_ARG="$1"
-    shift
-fi
+if [[ "$1" == http* ]]; then SCRIPT_URL_ARG="$1"; shift; fi
 main_menu
