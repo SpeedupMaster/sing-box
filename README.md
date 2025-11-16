@@ -1,216 +1,244 @@
-# 一键安装 sing-box（VLESS + REALITY）并启用 BBR+fq
+# Sing-Box VLESS Reality 一键管理脚本
 
-本项目提供一份在常见 Linux VPS 上的一键脚本，快速搭建 sing-box（内核）服务，使用 VLESS + REALITY 协议，并支持一键安装/启用 BBR+fq 网络加速。脚本包含管理菜单，支持安装、更新、卸载、查看节点信息等。同时提供“远程短命令”与本地快捷命令“singbox”。
+一个 **完整、稳定、自动化** 的 sing-box VLESS + Reality 一键安装 / 升级 / 管理脚本。
 
-## 功能特性
+脚本包含：
 
-- 一键安装/更新/卸载 sing-box（VLESS + REALITY）
-- 自动检测 443 端口占用（如被 Nginx 占用则默认改用 8443）
-- 自动生成并持久化节点参数（UUID、Reality 私钥/公钥、short_id）
-- 输出完整客户端参数与 vless 导入链接（可直接导入 v2rayN/v2rayNG）
-- 安装并启用 BBR+fq 网络加速（内核不支持时可选升级内核并提示重启）
-- 自动创建快捷命令：输入 `singbox` 即可打开管理菜单
-- 防火墙自动放行端口（支持 ufw 或 firewalld）
+- Sing-Box 一键安装（自动生成 Reality 密钥、UUID、ShortID、配置文件）
+- 自动开启 BBR + FQ
+- 自带更新功能（从 GitHub 自动下载最新版本）
+- 节点信息展示（含二维码）
+- 自动端口占用检查与修改
+- 自动生成 VLESS Reality 链接
+- 自带快捷命令 `singbox`
+- 支持 Debian / Ubuntu / CentOS / Rocky / AlmaLinux 等主流发行版
 
-## 支持环境
+脚本版本：**v1.9.0**  
+支持架构：**amd64 / arm64**
 
-- 系统：Debian 11/12、Ubuntu 20.04/22.04/24.04、CentOS/AlmaLinux/Rocky 8/9
-- 架构：amd64、arm64
-- 需要 root 权限执行（使用 sudo 或 root 用户）
+---
 
-## 快速开始
+## ✨ 功能特性
 
-一键远程执行（短命令，脚本会自安装并创建快捷命令 singbox）：
+### ✔ 一键安装 Sing-Box（VLESS + Reality）
+- 自动检测 CPU 架构
+- 自动从 GitHub 获取最新版 sing-box
+- 自动生成 Reality keypair
+- 自动随机选择高质量 SNI（支持手动自定义）
+- 自动创建 systemd 服务
 
-- 使用 curl：
+### ✔ 一键更新 sing-box（完整实现）
+- 自动检测本地版本与最新版本
+- 自动下载、替换、重启
+- 无损更新配置文件
+
+### ✔ 管理能力
+- 重启 Sing-Box 服务
+- 删除（卸载）Sing-Box + 配置 + 服务
+- 查看配置信息（含二维码）
+- 查看 BBR/FQ 状态
+- 自动生成快捷命令 `singbox`
+
+---
+
+## 🚀 一键安装
+
+复制粘贴即可运行（实时拉取最新脚本）：
+
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh)
 ```
 
-- 使用 wget：
-```bash
-bash <(wget -qO- https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh)
-```
-
-首次执行后，脚本会将自身安装到 `/usr/local/bin/singboxctl`，并创建快捷命令 `/usr/local/bin/singbox`。之后可以直接运行：
+安装完成后，你可以直接使用：
 
 ```bash
 singbox
 ```
 
-## 管理菜单与命令
+快速打开管理菜单。
 
-运行 `singbox` 或执行脚本，将看到管理菜单：
+---
 
-- 1) 安装/初始化
-- 2) 更新 sing-box 到最新版本
-- 3) 重启服务
-- 4) 查看节点信息与导入链接
-- 5) 卸载
-- 6) 安装/启用 BBR+fq
-- 0) 退出
+## 📌 使用方法（主菜单）
 
-也可以使用命令行参数直接操作：
+运行：
 ```bash
-# 查看菜单
 singbox
-
-# 直接安装/初始化
-sudo singbox install
-
-# 更新 sing-box 到最新版本
-sudo singbox update
-
-# 重启服务
-sudo singbox restart
-
-# 查看节点信息与导入链接
-singbox info
-
-# 安装/启用 BBR+fq
-sudo singbox bbr
-
-# 卸载
-sudo singbox uninstall
 ```
 
-## 安装流程简述
+你将看到如下菜单：
 
-- 检测系统与架构，安装依赖（curl、tar、jq、openssl、systemd、iproute 等）
-- 下载 sing-box 最新版本并安装到 `/usr/local/bin/sing-box`
-- 根据交互输入，生成并写入服务端配置 `/etc/sing-box/config.json`
-- 生成 UUID、Reality 私钥/公钥、short_id，写入元数据 `/etc/sing-box/reality.meta.json`
-- 创建并启动 systemd 服务 `/etc/systemd/system/sing-box.service`
-- 开放防火墙端口（如 ufw/firewalld）
-- 输出客户端使用信息与 vless 导入链接（可直接复制到 v2rayN/v2rayNG）
-
-注：
-- 如果检测到 443 端口被占用（例如 Nginx），脚本默认监听端口改为 8443。
-- 握手域名（SNI）应为可正常提供 TLS 的真实网站域名，例如：www.cloudflare.com、www.bing.com、www.wikipedia.org。
-
-## 客户端配置示例
-
-安装完成后，脚本会打印节点信息与 vless 导入链接。例如：
-
-- vless 导入链接（示例，实际以脚本输出为准）：
 ```
-vless://UUID@地址:端口?encryption=none&security=reality&type=tcp&flow=xtls-rprx-vision&pbk=PUBLIC_KEY&sid=SHORT_ID&sni=SNI_DOMAIN&fp=chrome#VLESS-REALITY
+====================================================
+  Sing-Box VLESS Reality 一键管理脚本 (v1.9.0)
+====================================================
+  1. 安装 Sing-Box         2. 卸载 Sing-Box
+  3. 更新 Sing-Box         4. 重启 Sing-Box
+  5. 查看节点信息        6. 检查 BBR+FQ 状态
+----------------------------------------------------
+  0. 退出脚本
+====================================================
 ```
 
-- sing-box 客户端 outbound 配置片段（示例）：
-```json
-{
-  "type": "vless",
-  "server": "你的服务器域名或IP",
-  "server_port": 8443,
-  "uuid": "你的UUID",
-  "flow": "xtls-rprx-vision",
-  "transport": { "type": "tcp" },
-  "tls": {
-    "enabled": true,
-    "server_name": "握手域名（SNI）",
-    "reality": {
-      "enabled": true,
-      "public_key": "Reality 公钥",
-      "short_id": "Reality short_id"
-    }
-  }
-}
+---
+
+## 🔧 节点信息展示示例
+
+脚本会自动生成：
+
+- IP
+- 端口
+- UUID
+- Reality 公钥
+- Short ID
+- SNI
+- 完整的 VLESS Reality 链接
+- 导入二维码
+
+示例：
+
+```
+================ 节点配置信息 ================
+  地址: 1.2.3.4
+  端口: 443
+  UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  Flow: xtls-rprx-vision
+  Security: reality
+  SNI: gateway.icloud.com
+  公钥: XXXXXXXXXXXXXXXXXXXXX
+  Short ID: abcd1234
+================ VLESS 导入链接 ================
+vless://UUID@1.2.3.4:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=gateway.icloud.com&fp=chrome&pbk=PUBLIC_KEY&sid=abcd1234&type=tcp#vps-xxxxxx
+===================== 二维码 =====================
+（ASCII二维码）
 ```
 
-## 与 Nginx 共享 443（可选进阶）
+---
 
-若你必须继续使用 443 并同时提供 Web 与 Reality，可使用 Nginx stream 的 SNI 分流，将特定 SNI（如伪装域名）转发到 sing-box，其它域名转发到 Web。
+## 🔄 更新 Sing-Box
 
-示例（需启用 Nginx stream 模块）：
-```nginx
-stream {
-  map $ssl_preread_server_name $route {
-    ~^(www\.cloudflare\.com|www\.bing\.com|www\.wikipedia\.org)$ singbox;
-    default web;
-  }
-  upstream singbox_backend { server 127.0.0.1:8443; } # sing-box 监听端口
-  upstream web_backend    { server 127.0.0.1:443; }   # 你的原有服务（或更改端口）
+脚本已内置完整更新功能，自动检测最新版本：
 
-  server {
-    listen 443 reuseport;
-    proxy_pass $route;
-    ssl_preread on;
-  }
-}
-# 验证并重载
-# nginx -t && systemctl reload nginx
-```
-
-注意：
-- Reality 客户端的 SNI 是伪装域名（你在安装时输入的 SNI），将此域名分流到 sing-box 即可。
-- 如果不需要共享 443，建议直接使用 8443（或其他未占用端口），配置更简单。
-
-## BBR+fq 加速
-
-脚本提供一键安装/启用 BBR+fq 的选项：
-
-- 已支持 BBR 的内核：直接写入 sysctl 参数并启用。
-- 不支持 BBR 的内核：可选择自动安装较新内核（Ubuntu 安装 linux-generic，Debian 可选 backports 的 linux-image-amd64，EL 系列通过 elrepo 安装 kernel-ml），安装后需要重启，再运行菜单 6 启用。
-
-验证 BBR+fq 是否启用：
 ```bash
-sysctl -n net.ipv4.tcp_congestion_control   # 应为 bbr
-sysctl -n net.core.default_qdisc            # 应为 fq
-uname -r                                    # 查看当前内核版本
+singbox
 ```
 
-## 常见问题
+选择：
 
-- 443 端口被占用怎么办？
-  - 脚本会检测并默认改用 8443。也可参考“与 Nginx 共享 443（可选进阶）”实现共用 443。
+```
+3. 更新 Sing-Box
+```
 
-- 安装后无法连接？
-  - 检查防火墙是否放行端口（脚本已尝试自动放行）。
-  - 确认客户端的 SNI 与服务端 handshake.server 一致，且为真实 TLS 网站。
-  - 查看服务日志：`journalctl -u sing-box -f`
-  - 检查配置文件：`/etc/sing-box/config.json`，修改后重启服务：`sudo systemctl restart sing-box`
+脚本会自动下载最新版并安全替换运行中的版本。
 
-- GitHub 下载失败或速度慢？
-  - 尝试使用网络代理或镜像源，或在国内服务器上使用中转/加速服务。
-  - 你也可以将 sing-box 二进制预先上传到你的服务器并替换脚本的下载逻辑。
+---
 
-- IPv6/IPv4 访问问题？
-  - 脚本默认监听 `::`（IPv6 any）；一般情况下可同时接收 IPv4/IPv6。如你的环境不兼容，可将配置中的 `listen` 改为 `"0.0.0.0"` 并重启服务。
+## ❌ 卸载 Sing-Box
 
-## 更新与卸载
+非常干净的卸载流程：
 
-- 更新：
+- 删除二进制文件
+- 删除 systemd 服务
+- 删除配置目录
+- 删除快捷命令
+
+在菜单中选择：
+
+```
+2. 卸载 Sing-Box
+```
+
+---
+
+## ⚙ BBR + FQ 自动优化
+
+安装过程中会自动启用：
+
+- net.core.default_qdisc=fq  
+- net.ipv4.tcp_congestion_control=bbr  
+
+你也可以随时检查：
+
+```
+6. 检查 BBR+FQ 状态
+```
+
+---
+
+## 🧩 支持的系统
+
+| 系统 | 支持 |
+|------|------|
+| Debian 9/10/11/12 | ✔ |
+| Ubuntu 18/20/22/24 | ✔ |
+| CentOS 7/Stream | ✔ |
+| Rocky Linux | ✔ |
+| AlmaLinux | ✔ |
+| 其他 systemd Linux | ✔ |
+
+---
+
+## ⚙ 支持的架构
+
+- amd64（x86_64）
+- arm64（aarch64）
+
+---
+
+## 📄 常见问题 FAQ
+
+### 1. 我能自定义 SNI 吗？
+可以，安装时会询问输入，你可以填任意 TLS 网站。
+
+### 2. 不填 SNI 会怎样？
+脚本会从内置的高质量网站池中随机选择。
+
+### 3. 能否重新查看节点信息？
+可以，运行：
+
+```
+singbox -> 5
+```
+
+### 4. 如何重新生成密钥？
+建议卸载后重新安装：
+
+```
+singbox -> 2
+```
+
+---
+
+## 🧑‍💻 开发者说明
+
+脚本安装后会保存到：
+
+```
+/usr/local/bin/singbox-manager
+```
+
+并设置快捷命令：
+
+```
+alias singbox='bash /usr/local/bin/singbox-manager'
+```
+
+---
+
+## ⭐ 推荐用法
+
+### 查看状态
 ```bash
-sudo singbox update
+systemctl status sing-box
 ```
-会下载 sing-box 最新版本并重启服务。
 
-- 卸载：
+### 查看日志
 ```bash
-sudo singbox uninstall
+journalctl -u sing-box -f
 ```
-提供两种卸载方式：删除全部（二进制与配置）或仅删除服务（保留二进制与配置）。
 
-## 文件结构
+---
 
-- 二进制：`/usr/local/bin/sing-box`
-- 配置目录：`/etc/sing-box/`
-  - 主配置：`/etc/sing-box/config.json`
-  - 元数据：`/etc/sing-box/reality.meta.json`
-- systemd 服务：`/etc/systemd/system/sing-box.service`
-- 脚本本体：`/usr/local/bin/singboxctl`
-- 快捷命令：`/usr/local/bin/singbox`
-- BBR 配置：`/etc/sysctl.d/99-bbr-fq.conf`
+## 📜 许可证
 
-## 安全与建议
-
-- 请妥善保管 Reality 私钥与 UUID。脚本不会将私钥对外输出。
-- 握手域名请选用稳定的 TLS 网站，且尽量避免与真实业务域名冲突。
-- 若在高限制网络环境，尽量使用 443 端口，配合 Nginx stream 分流；或选择常见开放端口（如 8443/2053）。
-- 定期更新 sing-box 至最新版本，以获得修复与性能提升。
-
-## 许可证与致谢
-
-- 脚本依赖于 sing-box 项目（SagerNet/sing-box）。感谢开源社区的贡献。
-- 本脚本以“按现状”提供，使用风险自负。欢迎自行修改与扩展菜单功能（如多用户、端口变更、重生成密钥等）。
+本项目采用 MIT License。
