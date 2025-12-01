@@ -1,244 +1,85 @@
 # Sing-Box VLESS Reality 一键管理脚本
 
-一个 **完整、稳定、自动化** 的 sing-box VLESS + Reality 一键安装 / 升级 / 管理脚本。
+[![Sing-Box](https://img.shields.io/badge/Sing--Box-Latest-blue?logo=github)](https://github.com/SagerNet/sing-box)
+[![Shell](https://img.shields.io/badge/Language-Bash-green?logo=gnu-bash)](https://www.gnu.org/software/bash/)
+[![License](https://img.shields.io/badge/License-GPLv3-orange)](https://www.gnu.org/licenses/gpl-3.0)
 
-脚本包含：
+这是一个功能强大的 Linux Bash 脚本，用于在该 VPS 上一键部署和管理 **Sing-Box** 核心，并配置目前最先进的 **VLESS + Reality + XTLS-Vision** 协议。
 
-- Sing-Box 一键安装（自动生成 Reality 密钥、UUID、ShortID、配置文件）
-- 自动开启 BBR + FQ
-- 自带更新功能（从 GitHub 自动下载最新版本）
-- 节点信息展示（含二维码）
-- 自动端口占用检查与修改
-- 自动生成 VLESS Reality 链接
-- 自带快捷命令 `singbox`
-- 支持 Debian / Ubuntu / CentOS / Rocky / AlmaLinux 等主流发行版
-
-脚本版本：**v1.9.0**  
-支持架构：**amd64 / arm64**
-
----
+脚本集成了端口占用检测、BBR 优化、自动更新、二维码生成等实用功能。
 
 ## ✨ 功能特性
 
-### ✔ 一键安装 Sing-Box（VLESS + Reality）
-- 自动检测 CPU 架构
-- 自动从 GitHub 获取最新版 sing-box
-- 自动生成 Reality keypair
-- 自动随机选择高质量 SNI（支持手动自定义）
-- 自动创建 systemd 服务
+*   **🚀 极速部署**: 采用 Sing-Box 官方核心，配置高性能 VLESS 协议。
+*   **🔒 安全抗封**: 使用 Reality 协议 + Vision 流控，有效通过 GFW 防火墙检测，无需域名。
+*   **🛠 端口智能管理**:
+    *   自动扫描并列出系统当前已占用的端口。
+    *   支持用户自定义端口（自动检测冲突）。
+    *   支持**随机生成**未占用端口（2000-65535）。
+*   **🔄 版本管理**: 自动检测 GitHub 最新版本并进行无缝升级。
+*   **📡 伪装管理**: 内置常见的 Apple, Microsoft, Amazon 等大厂 SNI 域名，支持随机或自定义。
+*   **⚡ 性能优化**: 内置各种 BBR + FQ 拥塞控制算法检测与启用功能。
+*   **📱 便捷管理**: 生成 VLESS 链接及二维码，支持生成快捷指令 `singbox` 随时唤醒菜单。
 
-### ✔ 一键更新 sing-box（完整实现）
-- 自动检测本地版本与最新版本
-- 自动下载、替换、重启
-- 无损更新配置文件
+## 🖥️ 系统要求
 
-### ✔ 管理能力
-- 重启 Sing-Box 服务
-- 删除（卸载）Sing-Box + 配置 + 服务
-- 查看配置信息（含二维码）
-- 查看 BBR/FQ 状态
-- 自动生成快捷命令 `singbox`
+*   **操作系统**: Debian, Ubuntu, CentOS, Fedora, Rocky Linux, AlmaLinux 等主流 Linux 发行版。
+*   **架构**: AMD64 (x86_64) 或 ARM64 (aarch64)。
+*   **权限**: 需要 `root` 用户权限。
 
----
+## 📥 安装与使用
 
-## 🚀 一键安装
+### 方式一：一键安装（推荐）
 
-复制粘贴即可运行（实时拉取最新脚本）：
+请将下面的 URL 替换为您实际托管脚本的地址：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh)
+wget -N --no-check-certificate https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh && bash sing-box.sh
 ```
 
-安装完成后，你可以直接使用：
+### 方式二：手动下载运行
 
 ```bash
-singbox
+# 下载脚本
+curl -O https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh
+
+# 赋予执行权限
+chmod +x sing-box.sh
+
+# 运行脚本
+./sing-box.sh
 ```
 
-快速打开管理菜单。
+### 快捷命令
 
----
-
-## 📌 使用方法（主菜单）
-
-运行：
-```bash
-singbox
-```
-
-你将看到如下菜单：
-
-```
-====================================================
-  Sing-Box VLESS Reality 一键管理脚本 (v1.9.0)
-====================================================
-  1. 安装 Sing-Box         2. 卸载 Sing-Box
-  3. 更新 Sing-Box         4. 重启 Sing-Box
-  5. 查看节点信息        6. 检查 BBR+FQ 状态
-----------------------------------------------------
-  0. 退出脚本
-====================================================
-```
-
----
-
-## 🔧 节点信息展示示例
-
-脚本会自动生成：
-
-- IP
-- 端口
-- UUID
-- Reality 公钥
-- Short ID
-- SNI
-- 完整的 VLESS Reality 链接
-- 导入二维码
-
-示例：
-
-```
-================ 节点配置信息 ================
-  地址: 1.2.3.4
-  端口: 443
-  UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-  Flow: xtls-rprx-vision
-  Security: reality
-  SNI: gateway.icloud.com
-  公钥: XXXXXXXXXXXXXXXXXXXXX
-  Short ID: abcd1234
-================ VLESS 导入链接 ================
-vless://UUID@1.2.3.4:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=gateway.icloud.com&fp=chrome&pbk=PUBLIC_KEY&sid=abcd1234&type=tcp#vps-xxxxxx
-===================== 二维码 =====================
-（ASCII二维码）
-```
-
----
-
-## 🔄 更新 Sing-Box
-
-脚本已内置完整更新功能，自动检测最新版本：
+脚本安装成功后，系统会自动创建快捷别名。以后只需输入以下命令即可呼出管理菜单：
 
 ```bash
 singbox
 ```
 
-选择：
+## 📋 菜单功能说明
 
-```
-3. 更新 Sing-Box
-```
+运行脚本后，您将看到以下菜单：
 
-脚本会自动下载最新版并安全替换运行中的版本。
+1.  **安装 Sing-Box**: 引导式安装，选择端口、SNI，自动配置 Reality。
+2.  **卸载 Sing-Box**: 彻底清除服务、二进制文件及配置文件。
+3.  **更新 Sing-Box**: 检查 Sing-Box 官方 GitHub Release，保留配置升级内核。
+4.  **重启 Sing-Box**: 重新加载服务。
+5.  **查看节点信息**: 显示当前节点配置、VLESS 链接以及**二维码**。
+6.  **检查 BBR+FQ 状态**: 检查系统 TCP 拥塞控制状态，并自动开启 BBR。
 
----
+## 📱 客户端支持
 
-## ❌ 卸载 Sing-Box
+本脚本配置的节点协议为 `VLESS + Reality + XTLS-Vision`，请确保您的客户端支持此协议：
 
-非常干净的卸载流程：
+*   **Android**: [v2rayNG](https://github.com/2dust/v2rayNG), [Sing-Box](https://github.com/SagerNet/sing-box-for-android), [Hiddify](https://github.com/hiddify/hiddify-app), [CMFA](https://github.com/MetaCubeX/ClashMetaForAndroid), [FlClash](https://github.com/chen08209/FlClash), [NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid)
+*   **iOS**: Shadowrocket, Sing-Box, FoXray, Egern, Stash, Clash Mi, Hidify
+*   **Windows**: [v2rayN](https://github.com/2dust/v2rayN), [Hiddify](https://github.com/hiddify/hiddify-app), [FlClash](https://github.com/chen08209/FlClash), [Clash Party](https://github.com/mihomo-party-org/clash-party), [Sparkle](https://github.com/xishang0128/sparkle), [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)
+*   **macOS**: [V2Box](https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690), [Clash Party](https://github.com/mihomo-party-org/clash-party), [Sparkle](https://github.com/xishang0128/sparkle), [Hiddify](https://github.com/hiddify/hiddify-app), [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)
 
-- 删除二进制文件
-- 删除 systemd 服务
-- 删除配置目录
-- 删除快捷命令
+## ⚠️ 免责声明
 
-在菜单中选择：
-
-```
-2. 卸载 Sing-Box
-```
-
----
-
-## ⚙ BBR + FQ 自动优化
-
-安装过程中会自动启用：
-
-- net.core.default_qdisc=fq  
-- net.ipv4.tcp_congestion_control=bbr  
-
-你也可以随时检查：
-
-```
-6. 检查 BBR+FQ 状态
-```
-
----
-
-## 🧩 支持的系统
-
-| 系统 | 支持 |
-|------|------|
-| Debian 9/10/11/12 | ✔ |
-| Ubuntu 18/20/22/24 | ✔ |
-| CentOS 7/Stream | ✔ |
-| Rocky Linux | ✔ |
-| AlmaLinux | ✔ |
-| 其他 systemd Linux | ✔ |
-
----
-
-## ⚙ 支持的架构
-
-- amd64（x86_64）
-- arm64（aarch64）
-
----
-
-## 📄 常见问题 FAQ
-
-### 1. 我能自定义 SNI 吗？
-可以，安装时会询问输入，你可以填任意 TLS 网站。
-
-### 2. 不填 SNI 会怎样？
-脚本会从内置的高质量网站池中随机选择。
-
-### 3. 能否重新查看节点信息？
-可以，运行：
-
-```
-singbox -> 5
-```
-
-### 4. 如何重新生成密钥？
-建议卸载后重新安装：
-
-```
-singbox -> 2
-```
-
----
-
-## 🧑‍💻 开发者说明
-
-脚本安装后会保存到：
-
-```
-/usr/local/bin/singbox-manager
-```
-
-并设置快捷命令：
-
-```
-alias singbox='bash /usr/local/bin/singbox-manager'
-```
-
----
-
-## ⭐ 推荐用法
-
-### 查看状态
-```bash
-systemctl status sing-box
-```
-
-### 查看日志
-```bash
-journalctl -u sing-box -f
-```
-
----
-
-## 📜 许可证
-
-本项目采用 MIT License。
+*   本脚本仅供网络技术研究和学习使用。
+*   请勿用于非法用途，请遵守服务器所在国家及您所在国家的法律法规。
+*   作者不对使用本脚本造成的任何后果负责。
