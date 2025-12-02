@@ -60,6 +60,9 @@ singbox
 
 运行脚本后，您将看到以下菜单：
 
+<img width="484" height="216" alt="image" src="https://github.com/user-attachments/assets/09326325-7d99-4ca9-8521-afcad19ae060" />
+
+
 1.  **安装 Sing-Box**: 引导式安装，选择端口、SNI，自动配置 Reality。
 2.  **卸载 Sing-Box**: 彻底清除服务、二进制文件及配置文件。
 3.  **更新 Sing-Box**: 检查 Sing-Box 官方 GitHub Release，保留配置升级内核。
