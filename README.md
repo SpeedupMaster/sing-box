@@ -74,7 +74,7 @@ singbox
 *   **Android**: [v2rayNG](https://github.com/2dust/v2rayNG), [Sing-Box](https://github.com/SagerNet/sing-box-for-android), [Hiddify](https://github.com/hiddify/hiddify-app), [CMFA](https://github.com/MetaCubeX/ClashMetaForAndroid), [FlClash](https://github.com/chen08209/FlClash), [NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid)
 *   **iOS**: Shadowrocket, Sing-Box, FoXray, Egern, Stash, Clash Mi, Hidify
 *   **Windows**: [v2rayN](https://github.com/2dust/v2rayN), [Hiddify](https://github.com/hiddify/hiddify-app), [FlClash](https://github.com/chen08209/FlClash), [Clash Party](https://github.com/mihomo-party-org/clash-party), [Sparkle](https://github.com/xishang0128/sparkle), [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)
-*   **macOS**: [V2Box](https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690), [Clash Party](https://github.com/mihomo-party-org/clash-party), [Sparkle](https://github.com/xishang0128/sparkle), [Hiddify](https://github.com/hiddify/hiddify-app), [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)
+*   **macOS**: [V2Box](https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690), [Clash Party](https://github.com/mihomo-party-org/clash-party), [Sparkle](https://github.com/xishang0128/sparkle), [Hiddify](https://github.com/hiddify/hiddify-app), [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev), [FlClash](https://github.com/chen08209/FlClash)
 
 ## ⚠️ 免责声明
 
