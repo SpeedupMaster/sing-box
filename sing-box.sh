@@ -3,7 +3,7 @@
 #====================================================
 # Script to install Sing-Box VLESS Reality on VPS
 # Author: Your Name
-# Version: 1.9.4 (Fixed Update Error for Pipe/Curl execution) 
+# Version: 1.9.5 (Final Fix for Pipe/Curl Update) 
 #====================================================
 
 #--- Colors & Global Variables ---# 
@@ -179,7 +179,7 @@ update_sing-box() {
     pause_back 
 } 
 
-# Function: Update the Script Itself (Safe Mode)
+# Function: Update the Script Itself (Safe Mode v2)
 update_script() {
     clear
     log_info "准备更新管理脚本..."
@@ -189,40 +189,50 @@ update_script() {
         url="$SCRIPT_URL_ARG"
     fi
     
-    # 检测是否是通过 pipe / curl 运行的 (fd 模式)
-    # 如果 $0 包含 /dev/fd 或者只是 "bash"，说明不是实体文件
+    # 严格检测模式：判断 $0 是否为常规文件
+    # 如果是管道/curl运行，[ -f "$0" ] 通常为假，或者 $0 会是 bash/sh
     local is_piped=false
-    if [[ "$0" == *"/dev/fd"* ]] || [[ "$0" == "bash" ]]; then
+    if [ ! -f "$0" ] || [[ "$0" == "bash" ]] || [[ "$0" == *"/dev/fd/"* ]]; then
         is_piped=true
-    else
-        # 尝试获取真实路径
-        if ! realpath "$0" &>/dev/null; then
-             is_piped=true
-        fi
     fi
 
     log_info "正在获取最新脚本: ${url}"
     if curl -fsSL -o /tmp/singbox_new.sh "${url}"; then
-        # 简单检查内容
         if grep -q "#!/usr/bin/env bash" /tmp/singbox_new.sh || grep -q "#!/bin/bash" /tmp/singbox_new.sh; then
             
+            # --- 核心修复逻辑 ---
+            
+            # 1. 无论是否是管道模式，总是尝试更新/安装到系统固定路径，方便用户下次使用
+            mkdir -p /usr/local/bin
+            cp /tmp/singbox_new.sh "${SCRIPT_PATH}"
+            chmod +x "${SCRIPT_PATH}"
+            
+            # 更新 bashrc 别名
+            sed -i "/alias ${SHORTCUT_NAME}=/d" ~/.bashrc
+            echo "alias ${SHORTCUT_NAME}='bash ${SCRIPT_PATH} ${url}'" >> ~/.bashrc
+            # 尝试在当前 shell 生效别名 (虽然后续 exit 可能导致失效，但作为尽力而为)
+            alias ${SHORTCUT_NAME}="bash ${SCRIPT_PATH} ${url}"
+
             if [ "$is_piped" = true ]; then
-                # 管道模式：无法覆盖 $0，直接更新到默认安装路径
-                log_warning "检测到当前脚本通过 URL 直接运行。"
-                log_info "新脚本将安装到系统路径: ${SCRIPT_PATH}"
-                mv /tmp/singbox_new.sh "${SCRIPT_PATH}"
-                chmod +x "${SCRIPT_PATH}"
-                log_success "脚本已更新！"
-                log_info "请使用命令 '${SHORTCUT_NAME}' 重新启动脚本。"
+                # 管道模式：绝对不要尝试 exec "$0" 或 mv "$0"
+                log_success "脚本已下载并安装到: ${SCRIPT_PATH}"
+                log_info "您现在可以通过输入命令 '${SHORTCUT_NAME}' 来启动新版脚本。"
+                log_warning "由于您是通过 URL 直接运行的，脚本将在此退出以应用更新。"
+                rm -f /tmp/singbox_new.sh
                 exit 0
             else
-                # 实体文件模式：覆盖当前文件
-                mv /tmp/singbox_new.sh "$0"
-                chmod +x "$0"
+                # 实体文件模式：如果是通过 ./sing-box.sh 运行的，更新该文件
+                # 避免自我覆盖错误：只有当 $0 和目标路径不同的时候才覆盖
+                if [ "$(realpath "$0")" != "$(realpath "${SCRIPT_PATH}")" ]; then
+                     mv /tmp/singbox_new.sh "$0"
+                     chmod +x "$0"
+                fi
+                
                 log_success "脚本文件已更新！"
                 log_info "正在重新加载新脚本..."
                 sleep 2
-                exec "$0" "$@"
+                # 重新执行系统路径下的脚本，确保环境统一
+                exec bash "${SCRIPT_PATH}" "$@"
             fi
         else
             log_error "下载的文件验证失败，更新取消。"
@@ -244,7 +254,7 @@ main_menu() {
     while true; do
         clear
         echo "====================================================" 
-        echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.9.4)" 
+        echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.9.5)" 
         echo "====================================================" 
         echo "  1. 安装 Sing-Box         2. 卸载 Sing-Box" 
         echo "  3. 更新 Sing-Box (内核)  4. 重启 Sing-Box" 
