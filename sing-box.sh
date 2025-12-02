@@ -3,7 +3,7 @@
 #====================================================
 # Script to install Sing-Box VLESS Reality on VPS
 # Author: Your Name
-# Version: 1.9.2 (Fixed Menu Loop & Port Check) 
+# Version: 1.9.3 (Added Script Self-Update Feature) 
 #====================================================
 
 #--- Colors & Global Variables ---# 
@@ -16,6 +16,7 @@ SINGBOX_SERVICE_FILE="/etc/systemd/system/sing-box.service"
 SCRIPT_PATH="/usr/local/bin/singbox-manager" 
 SHORTCUT_NAME="singbox" 
 LISTEN_PORT=443
+# 注意：确保这个 URL 是你脚本托管的真实 Raw 地址
 SCRIPT_URL_BUILTIN="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh" 
 SCRIPT_URL_ARG="" 
 SELECTED_SNI="" 
@@ -117,7 +118,7 @@ EOF
 
 update_sing-box() { 
     clear
-    log_info "开始更新 sing-box..." 
+    log_info "开始更新 sing-box 内核..." 
     if [ ! -f "${SINGBOX_BINARY_PATH}" ]; then
         log_error "sing-box 未安装，无法执行更新。请先安装。" 
         pause_back
@@ -178,6 +179,38 @@ update_sing-box() {
     pause_back 
 } 
 
+# Function: Update the Script Itself
+update_script() {
+    clear
+    log_info "准备更新管理脚本..."
+    
+    local url="${SCRIPT_URL_BUILTIN}"
+    if [ -n "$SCRIPT_URL_ARG" ]; then
+        url="$SCRIPT_URL_ARG"
+    fi
+    
+    log_info "正在获取最新脚本: ${url}"
+    if curl -fsSL -o /tmp/singbox_new.sh "${url}"; then
+        # 简单检查下载的文件是否包含 bash 头，防止对应的是 404 页面
+        if grep -q "#!/usr/bin/env bash" /tmp/singbox_new.sh || grep -q "#!/bin/bash" /tmp/singbox_new.sh; then
+            mv /tmp/singbox_new.sh "$0"
+            chmod +x "$0"
+            log_success "脚本已更新成功！"
+            log_info "正在重新加载新脚本..."
+            sleep 2
+            # 重新执行当前脚本
+            exec "$0" "$@"
+        else
+            log_error "下载的文件似乎不是有效的脚本文件，更新取消。"
+            rm -f /tmp/singbox_new.sh
+            pause_back
+        fi
+    else
+        log_error "下载失败，请检查网络或 GITHUB 连接。"
+        pause_back
+    fi
+}
+
 save_script() { log_info "正在保存管理脚本..."; local final_url_to_save=""; if [ -n "$SCRIPT_URL_ARG" ]; then final_url_to_save="$SCRIPT_URL_ARG"; log_info "检测到外部 URL 参数，将使用该地址。"; else final_url_to_save="$SCRIPT_URL_BUILTIN"; log_info "将使用内置地址进行保存。"; fi; if curl -fsSL -o "${SCRIPT_PATH}" "${final_url_to_save}"; then chmod +x "${SCRIPT_PATH}"; sed -i "/alias ${SHORTCUT_NAME}=/d" ~/.bashrc; echo "alias ${SHORTCUT_NAME}='bash ${SCRIPT_PATH} ${final_url_to_save}'" >> ~/.bashrc; log_success "已创建或更新快捷命令 '${SHORTCUT_NAME}'。"; log_info "请运行 'source ~/.bashrc' 或重新登录SSH。"; else log_error "从 ${final_url_to_save} 下载脚本失败。"; fi; } 
 install_sing-box() { log_info "开始安装 sing-box..."; [ -f "${SINGBOX_CONFIG_FILE}" ] && log_error "sing-box 已安装，请不要重复执行。"; install_dependencies; check_and_set_port; prompt_for_sni; ARCH=$(uname -m); case ${ARCH} in x86_64) ARCH="amd64" ;; aarch64) ARCH="arm64" ;; *) log_error "不支持的系统架构: ${ARCH}" ;; esac; LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r ".tag_name" | sed 's/v//'); [ -z "$LATEST_VERSION" ] && log_error "获取 sing-box 版本号失败。"; DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"; log_info "正在下载 sing-box v${LATEST_VERSION}..."; curl -fsSL -o /tmp/sing-box.tar.gz "${DOWNLOAD_URL}" || log_error "下载失败。"; tar -xzf /tmp/sing-box.tar.gz -C /tmp; mv "/tmp/sing-box-${LATEST_VERSION}-linux-${ARCH}/sing-box" "${SINGBOX_BINARY_PATH}"; chmod +x "${SINGBOX_BINARY_PATH}"; generate_config; create_service; install_bbr; save_script; systemctl daemon-reload; systemctl enable sing-box; systemctl start sing-box; if systemctl is-active --quiet sing-box; then log_success "sing-box 安装并启动成功！"; display_node_info; else log_error "sing-box 启动失败，请检查日志：journalctl -u sing-box --no-pager -l"; fi; rm -rf /tmp/sing-box*; } 
 uninstall_sing-box() { log_warning "确定要卸载 sing-box 吗? [y/N]"; read -r -p "请输入: " confirm; [[ ! "$confirm" =~ ^[yY]$ ]] && log_info "卸载操作已取消。" && pause_back && return; systemctl stop sing-box; systemctl disable sing-box; rm -f "${SINGBOX_SERVICE_FILE}" "${SINGBOX_BINARY_PATH}" "${SCRIPT_PATH}"; rm -rf "${SINGBOX_CONFIG_PATH}"; if grep -q "alias ${SHORTCUT_NAME}=" ~/.bashrc; then sed -i "/alias ${SHORTCUT_NAME}=/d" ~/.bashrc; log_info "已移除快捷命令。"; fi; systemctl daemon-reload; log_success "sing-box 已成功卸载。"; pause_back; } 
@@ -187,15 +220,16 @@ main_menu() {
     while true; do
         clear
         echo "====================================================" 
-        echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.9.2)" 
+        echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.9.3)" 
         echo "====================================================" 
         echo "  1. 安装 Sing-Box         2. 卸载 Sing-Box" 
-        echo "  3. 更新 Sing-Box         4. 重启 Sing-Box" 
+        echo "  3. 更新 Sing-Box (内核)  4. 重启 Sing-Box" 
         echo "  5. 查看节点信息        6. 检查 BBR+FQ 状态" 
+        echo "  7. 更新管理脚本 (本脚本)"
         echo "  --------------------------------------------------" 
         echo "  0. 退出脚本" 
         echo "====================================================" 
-        read -r -p "请输入选项 [0-6]: " choice
+        read -r -p "请输入选项 [0-7]: " choice
         case ${choice} in
             1) install_sing-box ;; 
             2) uninstall_sing-box ;; 
@@ -203,6 +237,7 @@ main_menu() {
             4) systemctl restart sing-box && log_success "Sing-box 已重启。" || log_error "操作失败或服务未安装。"; pause_back ;; 
             5) display_node_info ;; 
             6) check_bbr_status ;; 
+            7) update_script ;; # 调用更新脚本函数
             0) exit 0 ;; 
             *) log_error "无效选项。"; pause_back ;; 
         esac
