@@ -31,8 +31,6 @@
 
 ### 方式一：一键安装（推荐）
 
-请将下面的 URL 替换为您实际托管脚本的地址：
-
 ```bash
 wget -N --no-check-certificate https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh && bash sing-box.sh
 ```
