@@ -3,7 +3,7 @@
 #====================================================
 # Script to install Sing-Box VLESS Reality on VPS
 # Author: Your Name
-# Version: 1.9.3 (Added Script Self-Update Feature) 
+# Version: 1.9.4 (Fixed Update Error for Pipe/Curl execution) 
 #====================================================
 
 #--- Colors & Global Variables ---# 
@@ -16,7 +16,7 @@ SINGBOX_SERVICE_FILE="/etc/systemd/system/sing-box.service"
 SCRIPT_PATH="/usr/local/bin/singbox-manager" 
 SHORTCUT_NAME="singbox" 
 LISTEN_PORT=443
-# 注意：确保这个 URL 是你脚本托管的真实 Raw 地址
+# 请确保此 URL 指向您 GitHub raw 真实文件地址
 SCRIPT_URL_BUILTIN="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh" 
 SCRIPT_URL_ARG="" 
 SELECTED_SNI="" 
@@ -179,7 +179,7 @@ update_sing-box() {
     pause_back 
 } 
 
-# Function: Update the Script Itself
+# Function: Update the Script Itself (Safe Mode)
 update_script() {
     clear
     log_info "准备更新管理脚本..."
@@ -189,24 +189,48 @@ update_script() {
         url="$SCRIPT_URL_ARG"
     fi
     
+    # 检测是否是通过 pipe / curl 运行的 (fd 模式)
+    # 如果 $0 包含 /dev/fd 或者只是 "bash"，说明不是实体文件
+    local is_piped=false
+    if [[ "$0" == *"/dev/fd"* ]] || [[ "$0" == "bash" ]]; then
+        is_piped=true
+    else
+        # 尝试获取真实路径
+        if ! realpath "$0" &>/dev/null; then
+             is_piped=true
+        fi
+    fi
+
     log_info "正在获取最新脚本: ${url}"
     if curl -fsSL -o /tmp/singbox_new.sh "${url}"; then
-        # 简单检查下载的文件是否包含 bash 头，防止对应的是 404 页面
+        # 简单检查内容
         if grep -q "#!/usr/bin/env bash" /tmp/singbox_new.sh || grep -q "#!/bin/bash" /tmp/singbox_new.sh; then
-            mv /tmp/singbox_new.sh "$0"
-            chmod +x "$0"
-            log_success "脚本已更新成功！"
-            log_info "正在重新加载新脚本..."
-            sleep 2
-            # 重新执行当前脚本
-            exec "$0" "$@"
+            
+            if [ "$is_piped" = true ]; then
+                # 管道模式：无法覆盖 $0，直接更新到默认安装路径
+                log_warning "检测到当前脚本通过 URL 直接运行。"
+                log_info "新脚本将安装到系统路径: ${SCRIPT_PATH}"
+                mv /tmp/singbox_new.sh "${SCRIPT_PATH}"
+                chmod +x "${SCRIPT_PATH}"
+                log_success "脚本已更新！"
+                log_info "请使用命令 '${SHORTCUT_NAME}' 重新启动脚本。"
+                exit 0
+            else
+                # 实体文件模式：覆盖当前文件
+                mv /tmp/singbox_new.sh "$0"
+                chmod +x "$0"
+                log_success "脚本文件已更新！"
+                log_info "正在重新加载新脚本..."
+                sleep 2
+                exec "$0" "$@"
+            fi
         else
-            log_error "下载的文件似乎不是有效的脚本文件，更新取消。"
+            log_error "下载的文件验证失败，更新取消。"
             rm -f /tmp/singbox_new.sh
             pause_back
         fi
     else
-        log_error "下载失败，请检查网络或 GITHUB 连接。"
+        log_error "下载失败，请检查网络。"
         pause_back
     fi
 }
@@ -220,7 +244,7 @@ main_menu() {
     while true; do
         clear
         echo "====================================================" 
-        echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.9.3)" 
+        echo "  Sing-Box VLESS Reality 一键管理脚本 (v1.9.4)" 
         echo "====================================================" 
         echo "  1. 安装 Sing-Box         2. 卸载 Sing-Box" 
         echo "  3. 更新 Sing-Box (内核)  4. 重启 Sing-Box" 
@@ -237,7 +261,7 @@ main_menu() {
             4) systemctl restart sing-box && log_success "Sing-box 已重启。" || log_error "操作失败或服务未安装。"; pause_back ;; 
             5) display_node_info ;; 
             6) check_bbr_status ;; 
-            7) update_script ;; # 调用更新脚本函数
+            7) update_script ;; 
             0) exit 0 ;; 
             *) log_error "无效选项。"; pause_back ;; 
         esac
