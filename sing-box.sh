@@ -3,7 +3,7 @@
 set -u
 umask 022
 
-SCRIPT_VERSION="1.11.0"
+SCRIPT_VERSION="1.12.0"
 SCRIPT_URL_BUILTIN="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh"
 SCRIPT_URL_ARG=""
 
@@ -28,7 +28,8 @@ LISTEN_PORT="${DEFAULT_PORT}"
 SELECTED_SNI=""
 USE_FRONTING="no"
 FRONTING_SERVER="127.0.0.1"
-FRONTING_PORT="8443"
+DEFAULT_FRONTING_PORT="8443"
+FRONTING_PORT="${DEFAULT_FRONTING_PORT}"
 FRONTING_MAX_TIME_DIFFERENCE="1m"
 
 SNI_LIST=(
@@ -256,6 +257,10 @@ validate_domain() {
   [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$domain" == *.* ]]
 }
 
+is_valid_port() {
+  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
 prompt_for_sni() {
   local default_sni="$1"
   local suggested user_sni
@@ -310,6 +315,25 @@ prompt_for_fronting() {
     else
       log_info "将直接使用 Reality 回落到 ${SELECTED_SNI}:443。"
     fi
+    return 0
+  done
+}
+
+prompt_for_fronting_port() {
+  local default_port="${1:-$DEFAULT_FRONTING_PORT}"
+  local entered_port
+
+  while true; do
+    read -r -p "请输入前置回落端口 [${default_port}]: " entered_port
+    entered_port="${entered_port:-$default_port}"
+
+    if ! is_valid_port "$entered_port"; then
+      log_warning "前置端口无效，请输入 1-65535 之间的数字。"
+      continue
+    fi
+
+    FRONTING_PORT="$entered_port"
+    log_info "将使用前置回落端口 ${FRONTING_PORT}。"
     return 0
   done
 }
@@ -688,13 +712,25 @@ get_current_handshake_port() {
   get_config_value '.inbounds[] | select(.type == "vless" and (.tls.reality.enabled // false)) | .tls.reality.handshake.server_port' | head -n1
 }
 
-detect_fronting_mode() {
+get_current_fronting_port() {
   local handshake_server handshake_port
 
   handshake_server="$(get_current_handshake_server || true)"
   handshake_port="$(get_current_handshake_port || true)"
 
-  if [ "$handshake_server" = "$FRONTING_SERVER" ] && [ "$handshake_port" = "$FRONTING_PORT" ]; then
+  if [ "$handshake_server" = "$FRONTING_SERVER" ] && is_valid_port "${handshake_port:-}"; then
+    printf '%s\n' "$handshake_port"
+  else
+    printf '%s\n' "$DEFAULT_FRONTING_PORT"
+  fi
+}
+
+detect_fronting_mode() {
+  local handshake_server
+
+  handshake_server="$(get_current_handshake_server || true)"
+
+  if [ "$handshake_server" = "$FRONTING_SERVER" ]; then
     printf 'yes\n'
   else
     printf 'no\n'
@@ -775,6 +811,7 @@ perform_install() {
   local default_port="$1"
   local default_sni="$2"
   local default_fronting="${3:-no}"
+  local default_fronting_port="${4:-$DEFAULT_FRONTING_PORT}"
   local arch latest_version
 
   if ! install_dependencies; then
@@ -791,6 +828,12 @@ perform_install() {
 
   if ! prompt_for_fronting "$default_fronting"; then
     return 1
+  fi
+
+  if [ "$USE_FRONTING" = "yes" ]; then
+    if ! prompt_for_fronting_port "$default_fronting_port"; then
+      return 1
+    fi
   fi
 
   arch="$(resolve_arch)" || return 1
@@ -834,7 +877,7 @@ install_sing_box() {
 }
 
 reinstall_sing_box() {
-  local backup_dir current_port current_sni current_fronting confirm
+  local backup_dir current_port current_sni current_fronting current_fronting_port confirm
 
   log_info "开始重新安装 sing-box..."
 
@@ -857,11 +900,12 @@ reinstall_sing_box() {
   current_port="$(get_current_port || printf '%s' "$DEFAULT_PORT")"
   current_sni="$(get_current_sni || true)"
   current_fronting="$(detect_fronting_mode)"
+  current_fronting_port="$(get_current_fronting_port)"
   backup_dir="$(backup_current_files)"
   log_info "当前配置已备份到: ${backup_dir}"
 
   remove_singbox_components "yes"
-  if ! perform_install "$current_port" "$current_sni" "$current_fronting"; then
+  if ! perform_install "$current_port" "$current_sni" "$current_fronting" "$current_fronting_port"; then
     log_error "重新安装失败，原始备份保存在: ${backup_dir}"
     return 1
   fi

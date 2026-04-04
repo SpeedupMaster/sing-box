@@ -18,7 +18,7 @@
     *   支持**随机生成**未占用端口（2000-65535）。
 *   **🔄 版本管理**: 支持更新 Sing-Box 内核，也支持一键重新安装并重新生成节点参数。
 *   **📡 伪装管理**: 内置常见的 Apple, Microsoft, Amazon 等大厂 SNI 域名，支持安装时指定，也支持安装后随时更换。
-*   **🧱 前置支持**: 安装时可选择启用前置回落到本机 `127.0.0.1:8443`，默认关闭，便于配合 Caddy/Nginx 使用。
+*   **🧱 前置支持**: 安装时可选择启用前置回落到本机 `127.0.0.1`，并自定义前置端口，默认 `8443`，默认关闭，便于配合 Caddy/Nginx 使用。
 *   **⚡ 性能优化**: 内置各种 BBR + FQ 拥塞控制算法检测与启用功能。
 *   **📱 便捷管理**: 生成 VLESS 链接及二维码，支持生成快捷指令 `singbox` 随时唤醒菜单。
 
@@ -77,7 +77,7 @@ singbox update-script
 <img width="484" height="216" alt="image" src="https://github.com/user-attachments/assets/09326325-7d99-4ca9-8521-afcad19ae060" />
 
 
-1.  **安装 Sing-Box**: 引导式安装，选择端口、SNI，并可选启用前置回落到本机 Caddy/Nginx:8443，默认否。
+1.  **安装 Sing-Box**: 引导式安装，选择端口、SNI，并可选启用前置回落到本机 Caddy/Nginx，自定义前置端口，默认端口为 `8443`。
 2.  **重新安装 Sing-Box**: 重新走安装流程，并重新生成 UUID、Reality 密钥和 short_id。
 3.  **卸载 Sing-Box**: 彻底清除服务、二进制文件及配置文件。
 4.  **更新 Sing-Box**: 检查 Sing-Box 官方 GitHub Release，保留配置升级内核。
