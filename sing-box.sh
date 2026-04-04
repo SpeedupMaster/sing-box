@@ -191,7 +191,6 @@ list_occupied_ports() {
 
 prompt_for_port() {
   local default_port="$1"
-  local empty_behavior="${2:-default}"
   local user_port confirm_answer
 
   printf '%s\n' "----------------------------------------------------"
@@ -201,9 +200,13 @@ prompt_for_port() {
 
   while true; do
     printf '%b请输入 sing-box 监听端口 (1-65535)%b\n' "$CYAN" "$NC"
-    if [ "$empty_behavior" = "random" ]; then
-      read -r -p "留空直接回车将随机选择可用端口，也可手动输入端口 [默认 ${default_port}]: " user_port
-      if [ -z "$user_port" ]; then
+    read -r -p "留空直接回车使用默认值 [${default_port}]，输入 r 随机选择可用端口: " user_port
+
+    case "${user_port:-}" in
+      "")
+        user_port="$default_port"
+        ;;
+      r|R|random|RANDOM)
         while true; do
           user_port=$((RANDOM % 63536 + 2000))
           if ! port_in_use "$user_port"; then
@@ -212,11 +215,8 @@ prompt_for_port() {
             return 0
           fi
         done
-      fi
-    else
-      read -r -p "留空直接回车将使用默认值 [${default_port}]: " user_port
-      user_port="${user_port:-$default_port}"
-    fi
+        ;;
+    esac
 
     if [[ ! "$user_port" =~ ^[0-9]+$ ]] || [ "$user_port" -lt 1 ] || [ "$user_port" -gt 65535 ]; then
       log_warning "输入无效，请输入 1-65535 之间的数字。"
@@ -384,7 +384,8 @@ generate_config() {
   key_pair="$("$SINGBOX_BINARY_PATH" generate reality-keypair 2>/dev/null)"
   private_key="$(printf '%s\n' "$key_pair" | awk -F': *' '/PrivateKey/ {print $2; exit}' | tr -d '\r\n"')"
   public_key="$(printf '%s\n' "$key_pair" | awk -F': *' '/PublicKey/ {print $2; exit}' | tr -d '\r\n"')"
-  short_id="$(openssl rand -hex 8 | tr -d '\r\n')"
+  # sing-box Reality short_id expects a single hex string up to 8 characters.
+  short_id="$(openssl rand -hex 4 | tr -d '\r\n')"
 
   if [ -z "$uuid" ] || [ -z "$private_key" ] || [ -z "$public_key" ] || [ -z "$short_id" ]; then
     log_error "生成 sing-box Reality 配置所需参数失败。"
@@ -405,7 +406,6 @@ generate_config() {
       "tag": "vless-in",
       "listen": "::",
       "listen_port": ${LISTEN_PORT},
-      "sniff": true,
       "users": [
         {
           "uuid": "${uuid}",
@@ -422,9 +422,7 @@ generate_config() {
             "server_port": 443
           },
           "private_key": "${private_key}",
-          "short_id": [
-            "${short_id}"
-          ]
+          "short_id": "${short_id}"
         }
       }
     }
@@ -444,16 +442,21 @@ EOF
 }
 
 validate_config() {
+  local check_output
+
   if ! jq empty "$SINGBOX_CONFIG_FILE" >/dev/null 2>&1; then
     log_error "生成的配置文件不是有效 JSON。"
     return 1
   fi
 
-  if "$SINGBOX_BINARY_PATH" check -c "$SINGBOX_CONFIG_FILE" >/dev/null 2>&1; then
+  check_output="$("$SINGBOX_BINARY_PATH" check -c "$SINGBOX_CONFIG_FILE" 2>&1)" && {
     return 0
-  fi
+  }
 
   log_error "sing-box 配置校验失败。"
+  if [ -n "$check_output" ]; then
+    printf '%s\n' "$check_output" >&2
+  fi
   return 1
 }
 
@@ -610,7 +613,7 @@ display_node_info() {
 
   cfg_port="$(get_current_port)"
   uuid="$(get_config_value '.inbounds[] | select(.type == "vless") | .users[0].uuid' | head -n1)"
-  short_id="$(get_config_value '.inbounds[] | select(.type == "vless" and (.tls.reality.enabled // false)) | .tls.reality.short_id[0]' | head -n1)"
+  short_id="$(get_config_value '.inbounds[] | select(.type == "vless" and (.tls.reality.enabled // false)) | .tls.reality.short_id' | head -n1)"
   server_name="$(get_current_sni)"
   public_key="$(tr -d '\r\n' <"$REALITY_PUB_KEY_FILE")"
   ip_addr="$(get_public_ip || true)"
@@ -647,14 +650,13 @@ display_node_info() {
 perform_install() {
   local default_port="$1"
   local default_sni="$2"
-  local port_empty_behavior="${3:-random}"
   local arch latest_version
 
   if ! install_dependencies; then
     return 1
   fi
 
-  if ! prompt_for_port "$default_port" "$port_empty_behavior"; then
+  if ! prompt_for_port "$default_port"; then
     return 1
   fi
 
@@ -699,7 +701,7 @@ install_sing_box() {
     return 1
   fi
 
-  perform_install "$DEFAULT_PORT" "" "random"
+  perform_install "$DEFAULT_PORT" ""
 }
 
 reinstall_sing_box() {
@@ -709,7 +711,7 @@ reinstall_sing_box() {
 
   if ! is_installed; then
     log_warning "未检测到已安装环境，将直接进入安装流程。"
-    perform_install "$DEFAULT_PORT" "" "random"
+    perform_install "$DEFAULT_PORT" ""
     return $?
   fi
 
@@ -729,7 +731,7 @@ reinstall_sing_box() {
   log_info "当前配置已备份到: ${backup_dir}"
 
   remove_singbox_components "yes"
-  if ! perform_install "$current_port" "$current_sni" "default"; then
+  if ! perform_install "$current_port" "$current_sni"; then
     log_error "重新安装失败，原始备份保存在: ${backup_dir}"
     return 1
   fi
