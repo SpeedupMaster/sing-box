@@ -32,7 +32,7 @@
 ### 方式一：一键安装（推荐）
 
 ```bash
-wget -N --no-check-certificate https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh && bash sing-box.sh
+bash <(curl -Ls https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh)
 ```
 
 ### 方式二：手动下载运行
