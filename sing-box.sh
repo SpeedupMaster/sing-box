@@ -3,7 +3,7 @@
 set -u
 umask 022
 
-SCRIPT_VERSION="1.10.0"
+SCRIPT_VERSION="1.11.0"
 SCRIPT_URL_BUILTIN="https://raw.githubusercontent.com/SpeedupMaster/sing-box/main/sing-box.sh"
 SCRIPT_URL_ARG=""
 
@@ -26,6 +26,10 @@ BACKUP_ROOT="/etc/sing-box-manager/backups"
 DEFAULT_PORT="443"
 LISTEN_PORT="${DEFAULT_PORT}"
 SELECTED_SNI=""
+USE_FRONTING="no"
+FRONTING_SERVER="127.0.0.1"
+FRONTING_PORT="8443"
+FRONTING_MAX_TIME_DIFFERENCE="1m"
 
 SNI_LIST=(
   "gateway.icloud.com"
@@ -272,6 +276,44 @@ prompt_for_sni() {
   done
 }
 
+prompt_for_fronting() {
+  local default_use="${1:-no}"
+  local prompt answer
+
+  if [ "$default_use" = "yes" ]; then
+    prompt="是否使用前置回落到本机 Caddy/Nginx:${FRONTING_PORT}？[Y/n]: "
+  else
+    prompt="是否使用前置回落到本机 Caddy/Nginx:${FRONTING_PORT}？[y/N]: "
+  fi
+
+  while true; do
+    read -r -p "$prompt" answer
+
+    case "${answer:-}" in
+      "")
+        USE_FRONTING="$default_use"
+        ;;
+      y|Y|yes|YES)
+        USE_FRONTING="yes"
+        ;;
+      n|N|no|NO)
+        USE_FRONTING="no"
+        ;;
+      *)
+        log_warning "输入无效，请输入 y 或 n。"
+        continue
+        ;;
+    esac
+
+    if [ "$USE_FRONTING" = "yes" ]; then
+      log_info "将使用前置回落到 ${FRONTING_SERVER}:${FRONTING_PORT}。"
+    else
+      log_info "将直接使用 Reality 回落到 ${SELECTED_SNI}:443。"
+    fi
+    return 0
+  done
+}
+
 copy_running_script_to() {
   local destination="$1"
   local source_file tmp_file
@@ -384,7 +426,6 @@ generate_config() {
   key_pair="$("$SINGBOX_BINARY_PATH" generate reality-keypair 2>/dev/null)"
   private_key="$(printf '%s\n' "$key_pair" | awk -F': *' '/PrivateKey/ {print $2; exit}' | tr -d '\r\n"')"
   public_key="$(printf '%s\n' "$key_pair" | awk -F': *' '/PublicKey/ {print $2; exit}' | tr -d '\r\n"')"
-  # sing-box Reality short_id expects a single hex string up to 8 characters.
   short_id="$(openssl rand -hex 4 | tr -d '\r\n')"
 
   if [ -z "$uuid" ] || [ -z "$private_key" ] || [ -z "$public_key" ] || [ -z "$short_id" ]; then
@@ -394,7 +435,57 @@ generate_config() {
 
   printf '%s\n' "$public_key" >"$REALITY_PUB_KEY_FILE"
 
-  cat >"$SINGBOX_CONFIG_FILE" <<EOF
+  if [ "$USE_FRONTING" = "yes" ]; then
+    cat >"$SINGBOX_CONFIG_FILE" <<EOF
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "::",
+      "listen_port": ${LISTEN_PORT},
+      "users": [
+        {
+          "uuid": "${uuid}",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "${SELECTED_SNI}",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "${FRONTING_SERVER}",
+            "server_port": ${FRONTING_PORT}
+          },
+          "private_key": "${private_key}",
+          "short_id": [
+            "${short_id}"
+          ],
+          "max_time_difference": "${FRONTING_MAX_TIME_DIFFERENCE}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    }
+  ]
+}
+EOF
+  else
+    cat >"$SINGBOX_CONFIG_FILE" <<EOF
 {
   "log": {
     "level": "info",
@@ -422,7 +513,9 @@ generate_config() {
             "server_port": 443
           },
           "private_key": "${private_key}",
-          "short_id": "${short_id}"
+          "short_id": [
+            "${short_id}"
+          ]
         }
       }
     }
@@ -439,6 +532,7 @@ generate_config() {
   ]
 }
 EOF
+  fi
 }
 
 validate_config() {
@@ -586,6 +680,27 @@ get_current_sni() {
   get_config_value '.inbounds[] | select(.type == "vless" and (.tls.reality.enabled // false)) | .tls.server_name' | head -n1
 }
 
+get_current_handshake_server() {
+  get_config_value '.inbounds[] | select(.type == "vless" and (.tls.reality.enabled // false)) | .tls.reality.handshake.server' | head -n1
+}
+
+get_current_handshake_port() {
+  get_config_value '.inbounds[] | select(.type == "vless" and (.tls.reality.enabled // false)) | .tls.reality.handshake.server_port' | head -n1
+}
+
+detect_fronting_mode() {
+  local handshake_server handshake_port
+
+  handshake_server="$(get_current_handshake_server || true)"
+  handshake_port="$(get_current_handshake_port || true)"
+
+  if [ "$handshake_server" = "$FRONTING_SERVER" ] && [ "$handshake_port" = "$FRONTING_PORT" ]; then
+    printf 'yes\n'
+  else
+    printf 'no\n'
+  fi
+}
+
 get_public_ip() {
   local ip
   for ip in \
@@ -605,6 +720,7 @@ get_public_ip() {
 
 display_node_info() {
   local cfg_port uuid public_key short_id server_name ip_addr node_name vless_link
+  local handshake_server handshake_port fronting_mode_text
 
   if [ ! -f "$SINGBOX_CONFIG_FILE" ] || [ ! -f "$REALITY_PUB_KEY_FILE" ]; then
     log_error "配置文件或公钥文件不存在。"
@@ -613,8 +729,10 @@ display_node_info() {
 
   cfg_port="$(get_current_port)"
   uuid="$(get_config_value '.inbounds[] | select(.type == "vless") | .users[0].uuid' | head -n1)"
-  short_id="$(get_config_value '.inbounds[] | select(.type == "vless" and (.tls.reality.enabled // false)) | .tls.reality.short_id' | head -n1)"
+  short_id="$(get_config_value '.inbounds[] | select(.type == "vless" and (.tls.reality.enabled // false)) | if (.tls.reality.short_id | type) == "array" then .tls.reality.short_id[0] else .tls.reality.short_id end' | head -n1)"
   server_name="$(get_current_sni)"
+  handshake_server="$(get_current_handshake_server || true)"
+  handshake_port="$(get_current_handshake_port || true)"
   public_key="$(tr -d '\r\n' <"$REALITY_PUB_KEY_FILE")"
   ip_addr="$(get_public_ip || true)"
   ip_addr="${ip_addr:-<your_server_ip>}"
@@ -628,6 +746,11 @@ display_node_info() {
   vless_link="vless://${uuid}@${ip_addr}:${cfg_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${server_name}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp#${node_name}"
 
   clear_screen
+  if [ "$(detect_fronting_mode)" = "yes" ]; then
+    fronting_mode_text="已启用 (${handshake_server}:${handshake_port})"
+  else
+    fronting_mode_text="未启用 (${handshake_server}:${handshake_port})"
+  fi
   printf '%s\n' "================ 节点配置信息 ================"
   printf '  地址 (Address): %s\n' "$ip_addr"
   printf '  端口 (Port): %s\n' "$cfg_port"
@@ -635,6 +758,7 @@ display_node_info() {
   printf '  流控 (Flow): xtls-rprx-vision\n'
   printf '  安全 (Security): reality\n'
   printf '  SNI: %s\n' "$server_name"
+  printf '  前置回落: %s\n' "$fronting_mode_text"
   printf '  公钥 (pbk): %s\n' "$public_key"
   printf '  Short ID (sid): %s\n' "$short_id"
   printf '  指纹 (fp): chrome\n'
@@ -650,6 +774,7 @@ display_node_info() {
 perform_install() {
   local default_port="$1"
   local default_sni="$2"
+  local default_fronting="${3:-no}"
   local arch latest_version
 
   if ! install_dependencies; then
@@ -661,6 +786,10 @@ perform_install() {
   fi
 
   if ! prompt_for_sni "$default_sni"; then
+    return 1
+  fi
+
+  if ! prompt_for_fronting "$default_fronting"; then
     return 1
   fi
 
@@ -701,17 +830,17 @@ install_sing_box() {
     return 1
   fi
 
-  perform_install "$DEFAULT_PORT" ""
+  perform_install "$DEFAULT_PORT" "" "no"
 }
 
 reinstall_sing_box() {
-  local backup_dir current_port current_sni confirm
+  local backup_dir current_port current_sni current_fronting confirm
 
   log_info "开始重新安装 sing-box..."
 
   if ! is_installed; then
     log_warning "未检测到已安装环境，将直接进入安装流程。"
-    perform_install "$DEFAULT_PORT" ""
+    perform_install "$DEFAULT_PORT" "" "no"
     return $?
   fi
 
@@ -727,11 +856,12 @@ reinstall_sing_box() {
 
   current_port="$(get_current_port || printf '%s' "$DEFAULT_PORT")"
   current_sni="$(get_current_sni || true)"
+  current_fronting="$(detect_fronting_mode)"
   backup_dir="$(backup_current_files)"
   log_info "当前配置已备份到: ${backup_dir}"
 
   remove_singbox_components "yes"
-  if ! perform_install "$current_port" "$current_sni"; then
+  if ! perform_install "$current_port" "$current_sni" "$current_fronting"; then
     log_error "重新安装失败，原始备份保存在: ${backup_dir}"
     return 1
   fi
@@ -788,7 +918,7 @@ restart_sing_box() {
 }
 
 change_sni_domain() {
-  local current_sni backup_dir backup_config tmp_file
+  local current_sni backup_dir backup_config tmp_file fronting_enabled
 
   if [ ! -x "$SINGBOX_BINARY_PATH" ] || [ ! -f "$SINGBOX_CONFIG_FILE" ]; then
     log_error "当前未安装 sing-box，无法更换 SNI。"
@@ -814,13 +944,18 @@ change_sni_domain() {
   backup_dir="$(backup_current_files)"
   backup_config="${backup_dir}/config.json"
   tmp_file="$(mktemp)"
+  fronting_enabled="$(detect_fronting_mode)"
 
-  if ! jq --arg sni "$SELECTED_SNI" '
+  if ! jq --arg sni "$SELECTED_SNI" --arg use_fronting "$fronting_enabled" '
     .inbounds = (
       .inbounds | map(
         if (.type == "vless" and (.tls.reality.enabled // false)) then
           .tls.server_name = $sni |
-          .tls.reality.handshake.server = $sni
+          if $use_fronting == "yes" then
+            .
+          else
+            .tls.reality.handshake.server = $sni
+          end
         else
           .
         end
