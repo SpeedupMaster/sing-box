@@ -6,7 +6,7 @@
 
 这是一个功能强大的 Linux Bash 脚本，用于在该 VPS 上一键部署和管理 **Sing-Box** 核心，并配置目前最先进的 **VLESS + Reality + XTLS-Vision** 协议。
 
-脚本集成了端口占用检测、BBR 优化、自动更新、二维码生成等实用功能。
+脚本集成了端口占用检测、BBR 优化、自动更新、二维码生成、重新安装、更换 SNI 等实用功能。
 
 ## ✨ 功能特性
 
@@ -16,8 +16,8 @@
     *   自动扫描并列出系统当前已占用的端口。
     *   支持用户自定义端口（自动检测冲突）。
     *   支持**随机生成**未占用端口（2000-65535）。
-*   **🔄 版本管理**: 自动检测 GitHub 最新版本并进行无缝升级。
-*   **📡 伪装管理**: 内置常见的 Apple, Microsoft, Amazon 等大厂 SNI 域名，支持随机或自定义。
+*   **🔄 版本管理**: 支持更新 Sing-Box 内核，也支持一键重新安装并重新生成节点参数。
+*   **📡 伪装管理**: 内置常见的 Apple, Microsoft, Amazon 等大厂 SNI 域名，支持安装时指定，也支持安装后随时更换。
 *   **⚡ 性能优化**: 内置各种 BBR + FQ 拥塞控制算法检测与启用功能。
 *   **📱 便捷管理**: 生成 VLESS 链接及二维码，支持生成快捷指令 `singbox` 随时唤醒菜单。
 
@@ -50,10 +50,23 @@ chmod +x sing-box.sh
 
 ### 快捷命令
 
-脚本安装成功后，系统会自动创建快捷别名。以后只需输入以下命令即可呼出管理菜单：
+脚本安装成功后，系统会自动创建快捷命令。以后只需输入以下命令即可呼出管理菜单：
 
 ```bash
 singbox
+```
+
+也支持子命令方式：
+
+```bash
+singbox install
+singbox reinstall
+singbox update
+singbox restart
+singbox info
+singbox change-sni
+singbox check-bbr
+singbox update-script
 ```
 
 ## 📋 菜单功能说明
@@ -64,11 +77,14 @@ singbox
 
 
 1.  **安装 Sing-Box**: 引导式安装，选择端口、SNI，自动配置 Reality。
-2.  **卸载 Sing-Box**: 彻底清除服务、二进制文件及配置文件。
-3.  **更新 Sing-Box**: 检查 Sing-Box 官方 GitHub Release，保留配置升级内核。
-4.  **重启 Sing-Box**: 重新加载服务。
-5.  **查看节点信息**: 显示当前节点配置、VLESS 链接以及**二维码**。
-6.  **检查 BBR+FQ 状态**: 检查系统 TCP 拥塞控制状态，并自动开启 BBR。
+2.  **重新安装 Sing-Box**: 重新走安装流程，并重新生成 UUID、Reality 密钥和 short_id。
+3.  **卸载 Sing-Box**: 彻底清除服务、二进制文件及配置文件。
+4.  **更新 Sing-Box**: 检查 Sing-Box 官方 GitHub Release，保留配置升级内核。
+5.  **重启 Sing-Box**: 重新加载服务。
+6.  **查看节点信息**: 显示当前节点配置、VLESS 链接以及**二维码**。
+7.  **更换 Reality SNI**: 保留原节点参数，仅替换 Reality 伪装域名并重启服务。
+8.  **检查 BBR+FQ 状态**: 检查系统 TCP 拥塞控制状态。
+9.  **更新管理脚本**: 从远端拉取最新脚本并更新本地快捷命令。
 
 ## 📱 客户端支持
 
